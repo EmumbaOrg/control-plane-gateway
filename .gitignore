@@ -1,0 +1,37 @@
+# ---------------------------------------------------------------------------
+# Secrets — never commit
+# ---------------------------------------------------------------------------
+.env
+.env.*
+!.env.example
+.vkey
+vkey.json
+vkey*.json
+*.key
+*.pem
+*credentials*
+*secret*
+
+# ---------------------------------------------------------------------------
+# Captured traffic — never commit
+#
+# Captures contain the full text of prompts, file contents, and command output
+# returned to the model in tool_result blocks. Treat the capture store as
+# confidential data, not as source.
+# ---------------------------------------------------------------------------
+capture/
+capture_archive/
+export/
+_kwargs/
+
+# ---------------------------------------------------------------------------
+# Local / OS noise
+# ---------------------------------------------------------------------------
+.DS_Store
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+node_modules/
+*.log

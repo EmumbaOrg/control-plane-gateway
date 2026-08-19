@@ -1,0 +1,22 @@
+# Overlay that points LiteLLM at the local stub upstream instead of Anthropic.
+# No API key, no cost.
+#
+#   cd stub && uv run --with fastapi --with "uvicorn[standard]" \
+#       uvicorn stub_upstream:app --port 8080
+#
+#   docker compose -f docker-compose.yml -f docker-compose.stub.yml up
+#
+# host.docker.internal resolves to the host from inside the container on
+# Docker Desktop (macOS / Windows). On Linux, add:
+#   extra_hosts: ["host.docker.internal:host-gateway"]
+
+services:
+  litellm:
+    environment:
+      # The stub ignores the key entirely — it just must be non-empty so the
+      # provider client doesn't refuse to construct.
+      ANTHROPIC_API_KEY: "stub-not-a-real-key"
+    volumes:
+      - ./config.stub.yaml:/app/config.yaml:ro
+      - ./custom_capture.py:/app/custom_capture.py:ro
+      - ./capture:/app/capture

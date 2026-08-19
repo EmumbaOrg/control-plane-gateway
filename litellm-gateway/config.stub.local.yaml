@@ -1,0 +1,37 @@
+# Phase 1 config for running LiteLLM directly on the host (no Docker, no Postgres).
+#
+#   export ANTHROPIC_API_KEY="stub-not-a-real-key"
+#   export LITELLM_MASTER_KEY="sk-master-local-only"
+#   export CAPTURE_DIR="./capture"
+#   uv run --with "litellm[proxy]" litellm --config config.stub.local.yaml --port 4000
+#
+# No database, so no virtual keys and no spend UI — authenticate with the master
+# key instead. That is fine here: the fidelity checks care about what crosses the
+# wire, not about key management. Use docker-compose.stub.yml when you want the
+# full setup with virtual keys and the admin UI.
+
+model_list:
+  - model_name: claude-haiku-4-5
+    litellm_params:
+      model: anthropic/claude-haiku-4-5
+      api_key: os.environ/ANTHROPIC_API_KEY
+      api_base: http://localhost:8080
+
+  - model_name: claude-sonnet-5
+    litellm_params:
+      model: anthropic/claude-sonnet-5
+      api_key: os.environ/ANTHROPIC_API_KEY
+      api_base: http://localhost:8080
+
+  - model_name: claude-opus-5
+    litellm_params:
+      model: anthropic/claude-opus-5
+      api_key: os.environ/ANTHROPIC_API_KEY
+      api_base: http://localhost:8080
+
+general_settings:
+  master_key: os.environ/LITELLM_MASTER_KEY
+
+litellm_settings:
+  drop_params: false
+  callbacks: custom_capture.handler

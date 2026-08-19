@@ -1,0 +1,39 @@
+# Same as config.yaml, but every model points at the local stub upstream.
+# Used for the no-key Phase 1 checks.
+#
+# api_base is the key line. If LiteLLM appends /v1/messages to it the stub
+# serves /v1/messages; if it appends /messages the stub serves that too — it
+# accepts both so this works either way.
+
+model_list:
+  - model_name: claude-haiku-4-5
+    litellm_params:
+      model: anthropic/claude-haiku-4-5
+      api_key: os.environ/ANTHROPIC_API_KEY
+      api_base: http://host.docker.internal:8080
+
+  - model_name: claude-sonnet-5
+    litellm_params:
+      model: anthropic/claude-sonnet-5
+      api_key: os.environ/ANTHROPIC_API_KEY
+      api_base: http://host.docker.internal:8080
+
+  - model_name: claude-opus-5
+    litellm_params:
+      model: anthropic/claude-opus-5
+      api_key: os.environ/ANTHROPIC_API_KEY
+      api_base: http://host.docker.internal:8080
+
+general_settings:
+  # TESTED 18 Aug 2026, no effect on the /v1/messages route — it is wired for
+  # the Responses API path only. See FINDINGS.md.
+  # forward_client_headers_to_llm_api: true
+  master_key: os.environ/LITELLM_MASTER_KEY
+  database_url: os.environ/DATABASE_URL
+  store_prompts_in_spend_logs: true    # VERIFY key name; comment out if boot fails
+
+litellm_settings:
+  # Attempt to make LiteLLM pass client headers (incl. anthropic-beta)
+  # through to the provider. VERIFY the key name; unknown keys are ignored.
+  drop_params: false                   # must stay false — see config.yaml
+  callbacks: custom_capture.handler

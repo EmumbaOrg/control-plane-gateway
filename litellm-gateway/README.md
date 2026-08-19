@@ -1,0 +1,232 @@
+# LiteLLM capture spike
+
+Goal: find out whether **LiteLLM can serve as the gateway between Claude Code and
+Anthropic while capturing the messages that pass through it** — and if so, on
+which route and with what fidelity.
+
+This is an evaluation, not a build. The output is a scorecard plus evidence, which
+then settles the adopt / hybrid / build decision.
+
+---
+
+## Files
+
+| File | What it is |
+|---|---|
+| `docker-compose.yml` | LiteLLM proxy + Postgres |
+| `config.yaml` | Models, master key, DB, and the capture callback wiring |
+| `custom_capture.py` | The capture itself, plus a raw-payload dump for the first few calls |
+| `verify.py` | Scorecard over the capture directory |
+| `capture/` | Output. `<session-id>/*.json.gz`, `index.jsonl`, `_kwargs/` |
+
+**Every config key in `config.yaml` should be verified against the LiteLLM docs
+for the image tag you pull.** Key names move between releases:
+<https://docs.litellm.ai/docs/proxy/configs> ·
+<https://docs.litellm.ai/docs/proxy/logging> ·
+<https://docs.litellm.ai/docs/proxy/virtual_keys>
+
+---
+
+## Prerequisites
+
+- Docker (installed)
+- An Anthropic **API key** from <https://platform.claude.com> with credit on it.
+  This is a developer-platform account — **not** a claude.ai subscription, and
+  upgrading claude.ai to Pro does not produce one.
+- The Claude Code **CLI** (`npm i -g @anthropic-ai/claude-code`, installed).
+  The desktop app cannot be pointed at a gateway with these variables.
+
+---
+
+## Run
+
+```bash
+cd litellm-gateway
+
+export ANTHROPIC_API_KEY="sk-ant-api03-…"     # the real provider key
+export LITELLM_MASTER_KEY="sk-master-local-only"
+
+docker compose up
+```
+
+Wait for the proxy to report it is listening on `:4000`. If it refuses to boot
+complaining about an unknown setting, comment out `store_prompts_in_spend_logs`
+in `config.yaml` — our callback does not depend on it.
+
+### Mint a developer key
+
+```bash
+curl -s -X POST http://localhost:4000/key/generate \
+  -H "Authorization: Bearer $LITELLM_MASTER_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"models":["claude-opus-5","claude-sonnet-5","claude-haiku-4-5"],
+       "max_budget": 25,
+       "metadata": {"developer":"asif.hussain"}}'
+```
+
+The returned `key` (starting `sk-`) is the per-developer credential. This is
+LiteLLM giving you attribution and budget enforcement for free — features we had
+descoped when planning to write our own gateway.
+
+### Point Claude Code at it
+
+Two candidate base URLs. **Which one works is the main question this spike
+answers**, so test both.
+
+```bash
+# Candidate A — LiteLLM's native Messages endpoint
+export ANTHROPIC_BASE_URL="http://localhost:4000"
+
+# Candidate B — the Anthropic passthrough route
+export ANTHROPIC_BASE_URL="http://localhost:4000/anthropic"
+```
+
+Claude Code appends `/v1/messages` itself, so B resolves to
+`/anthropic/v1/messages`.
+
+```bash
+export ANTHROPIC_AUTH_TOKEN="sk-…the-virtual-key…"
+claude
+```
+
+Inside Claude Code, run `/status`. You want an `Anthropic base URL` line showing
+the proxy and an `Auth token` line naming `ANTHROPIC_AUTH_TOKEN`. A
+`Login method` line naming a claude.ai account instead means the variable did not
+reach the session.
+
+Set `--model claude-haiku-4-5` for the early runs. Prove the plumbing on the
+cheap model before spending anything on Opus.
+
+---
+
+## The nine checks
+
+Run `python3 verify.py` after generating traffic. It judges 1–3 and 5–8 from the
+captured files; 4 and 6 need a deliberate test.
+
+### 1. Does capture fire at all?
+
+```bash
+ls -R capture/ && cat capture/index.jsonl
+```
+
+Nothing there means either the callback is not loaded (check the proxy log for an
+import error) or **this route is not logged**. If A logs and B does not, that is
+the central finding — see "Likely outcome" below.
+
+### 2. Read a raw payload dump — do this first
+
+```bash
+ls capture/_kwargs/
+python3 -m json.tool capture/_kwargs/*.kwargs.json | less
+```
+
+This is the untouched callback payload. Look for:
+
+- **`kwargs.proxy_server_request.body`** — the original Claude Code request. If
+  present, we have the real payload. If absent, LiteLLM is only exposing its own
+  normalised view, and capture is lossy by construction.
+- **`system`**, **`tools`**, and any **`tool_result`** blocks inside that body.
+  Tool results carry the file contents and command output — most of the value of
+  capturing at all. Missing tool results is close to disqualifying.
+- **`response_obj`** — does it contain `thinking` and `tool_use` blocks, or only
+  flattened text?
+
+> **Known caveat:** for streamed requests, `response_obj` is LiteLLM's
+> *reassembled* response, not the provider's raw SSE bytes. Callback-based
+> capture is therefore normalised, not byte-faithful. That is a property of this
+> approach and one of the findings to record — a byte-faithful record needs a tap
+> in the data path rather than a callback beside it.
+
+### 3. Response completeness
+
+Run a prompt that makes Claude use a tool (ask it to read a file), then re-run
+`verify.py`. You want `tool_use` among the captured block types.
+
+### 4. Long thinking pause — go / no-go, and no config fixes it
+
+Claude Code aborts a stream after **300 seconds of silence**. The provider's
+keep-alive pings are the only traffic during a long thinking pause, so if LiteLLM
+reconstructs the stream rather than relaying it and drops those pings, sessions
+die mid-thought.
+
+Test it: a hard prompt at high effort on Opus, something that will think for
+several minutes. If the session dies around the five-minute mark, that is a
+blocking failure.
+
+### 5. Prompt caching — the cost check
+
+Send several prompts inside one Claude Code session, then:
+
+```bash
+python3 verify.py
+```
+
+You need `cache_read_input_tokens` above zero. **Zero cache reads across a
+multi-turn session means LiteLLM is reshaping the request and input cost is
+roughly ten times what it should be** — silently, with no error.
+
+### 6. Unknown `anthropic-beta` pass-through
+
+Send a request through the proxy by hand with a beta value LiteLLM cannot know
+about, and confirm it reaches the provider rather than being stripped:
+
+```bash
+curl -sS http://localhost:4000/v1/messages \
+  -H "Authorization: Bearer sk-…virtual-key…" \
+  -H "anthropic-version: 2023-06-01" \
+  -H "anthropic-beta: some-future-capability-2027-01-01" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"claude-haiku-4-5","max_tokens":16,
+       "messages":[{"role":"user","content":"say OK"}]}'
+```
+
+A stripped header means this setup breaks on a future Claude Code release.
+
+### 7. Session and sub-agent attribution
+
+`verify.py` reports distinct session ids and sub-agent ids. Sub-agent traffic
+appears once you run something that spawns parallel agents.
+
+### 8. `count_tokens`
+
+```bash
+docker compose logs litellm | grep -i count_tokens
+```
+
+A `404` means Claude Code falls back to counting context with **real inference
+calls** — paying model rates for something that has a free endpoint.
+
+### 9. Which route wins
+
+Repeat 1–8 under both base URLs and record which satisfies the most checks.
+
+---
+
+## Likely outcome, and what to do about it
+
+The pattern to expect is that the **native route logs but normalises**, and the
+**passthrough route is faithful but may not log**. If that is what you find, the
+answer is a **hybrid**: LiteLLM keeps virtual keys, budgets, and the spend
+dashboard; a thin byte-level tap sits in the data path purely to record the
+exchange. That keeps the product's governance without accepting lossy capture.
+
+Three possible conclusions:
+
+| Finding | Decision |
+|---|---|
+| A route passes every check | **Adopt LiteLLM.** Deliverable becomes its configuration plus the capture pipeline. Two weeks saved, budgets and per-developer keys gained. |
+| Faithful route is unlogged, or capture is lossy | **Hybrid.** LiteLLM for governance, thin tap for capture. |
+| Check 4 or 5 fails on every route | **Evidence to bring back.** Streams aborting after 300 s, or a measurable ten-fold cost increase, is a concrete argument — not an opinion. |
+
+---
+
+## Cost while running this
+
+Nothing here costs money except tokens. Run checks on `claude-haiku-4-5` where
+possible. Load a small amount of credit (~$25) and let `capture/index.jsonl` tell
+you the real burn rate after the first day rather than estimating it.
+
+⚠️ Never commit the provider key, and do not put it in a `.env` file — this
+machine's managed permission rules deny reading `.env`, which will only confuse
+you. Export it in the shell that starts the proxy.

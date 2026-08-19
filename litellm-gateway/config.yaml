@@ -1,0 +1,62 @@
+# LiteLLM proxy config for the message-capture spike.
+#
+# VERIFY every key below against the LiteLLM docs for the image tag you pull —
+# config key names have moved between releases:
+#   https://docs.litellm.ai/docs/proxy/configs
+#   https://docs.litellm.ai/docs/proxy/logging
+#   https://docs.litellm.ai/docs/proxy/virtual_keys
+
+model_list:
+  - model_name: claude-opus-5
+    litellm_params:
+      model: anthropic/claude-opus-5
+      api_key: os.environ/ANTHROPIC_API_KEY
+
+  - model_name: claude-sonnet-5
+    litellm_params:
+      model: anthropic/claude-sonnet-5
+      api_key: os.environ/ANTHROPIC_API_KEY
+
+  # Cheap model for smoke tests — run the fidelity checks against this,
+  # not Opus, until you know the setup works.
+  - model_name: claude-haiku-4-5
+    litellm_params:
+      model: anthropic/claude-haiku-4-5
+      api_key: os.environ/ANTHROPIC_API_KEY
+
+  # Specific version IDs that Claude Code uses
+  - model_name: claude-haiku-4-5-20251001
+    litellm_params:
+      model: anthropic/claude-haiku-4-5-20251001
+      api_key: os.environ/ANTHROPIC_API_KEY
+
+  - model_name: claude-opus-5-20250805
+    litellm_params:
+      model: anthropic/claude-opus-5-20250805
+      api_key: os.environ/ANTHROPIC_API_KEY
+
+  - model_name: claude-sonnet-5-20250514
+    litellm_params:
+      model: anthropic/claude-sonnet-5-20250514
+      api_key: os.environ/ANTHROPIC_API_KEY
+
+general_settings:
+  master_key: os.environ/LITELLM_MASTER_KEY
+  database_url: os.environ/DATABASE_URL
+
+  # Persist prompts and responses into LiteLLM's own spend logs, in addition
+  # to our file capture. VERIFY the key name — if the proxy refuses to boot
+  # complaining about an unknown setting, comment this line out; our callback
+  # is the primary capture path and does not depend on it.
+  store_prompts_in_spend_logs: true
+
+litellm_settings:
+  # CRITICAL. If LiteLLM drops request params it does not recognise, Claude
+  # Code's newer capabilities disappear silently instead of erroring — the
+  # worst possible failure mode for a capture gateway. Keep this false.
+  drop_params: false
+
+  # Our capture module. Format is "<module>.<instance>". Some releases expect
+  # a YAML list here instead — if the proxy fails to load the callback, try:
+  #   callbacks: ["custom_capture.handler"]
+  callbacks: custom_capture.handler

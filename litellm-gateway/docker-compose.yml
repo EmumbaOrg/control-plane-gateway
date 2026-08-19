@@ -1,0 +1,44 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: litellm
+      POSTGRES_PASSWORD: litellm
+      POSTGRES_DB: litellm
+    # Publish to the host so a GUI client (TablePlus/DBeaver/psql) can connect at
+    # localhost:5432. Local PoC only — a real deployment keeps the DB private.
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U litellm"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  litellm:
+    image: ghcr.io/berriai/litellm:main-latest
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "4000:4000"
+    environment:
+      # Read from your shell. Export both before `docker compose up`.
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:?export ANTHROPIC_API_KEY first}
+      LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY:?export LITELLM_MASTER_KEY first}
+      DATABASE_URL: postgresql://litellm:litellm@postgres:5432/litellm
+      CAPTURE_DIR: /app/capture
+      # Dump the first N raw callback payloads so we can see exactly what
+      # LiteLLM hands us. This is how we answer "is the full body captured?"
+      CAPTURE_KWARGS_DUMPS: "5"
+      LITELLM_LOG: DEBUG
+    volumes:
+      - ./config.yaml:/app/config.yaml:ro
+      - ./custom_capture.py:/app/custom_capture.py:ro
+      - ./capture:/app/capture
+    command: ["--config", "/app/config.yaml", "--detailed_debug"]
+
+volumes:
+  pgdata:
