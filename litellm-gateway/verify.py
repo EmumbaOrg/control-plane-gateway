@@ -120,22 +120,66 @@ def main() -> int:
         report("Request completeness", FAIL, detail)
 
     # --- 3. response completeness ---------------------------------------
+    #
+    # LiteLLM's callback hands us a NORMALISED response, so the captured object
+    # does not use Anthropic's content-block vocabulary. The answer text arrives
+    # as a plain STRING at `choices[].message.content`, tool calls as
+    # `message.tool_calls` entries typed "function", and reasoning as
+    # `thinking_blocks` / `reasoning_content`.
+    #
+    # Measured 21 Aug 2026 over 51 captured responses: 0 contained a
+    # `type: "text"` block and 0 contained `type: "tool_use"`; only the 15 with
+    # nested `thinking_blocks` matched the Anthropic vocabulary at all. So the old
+    # `"text" in interesting` requirement was unsatisfiable — PASS could never be
+    # reached, and the WARN it fell back to advised running a tool-using prompt,
+    # which could never clear it either.
+    #
+    # Both vocabularies are judged below. The Anthropic branch stays first, so if
+    # real Anthropic blocks ever do reach the callback they still take precedence.
     resp_types: set = set()
+    oa_content = oa_tool_calls = oa_reasoning = False
     for p in sorted(STORE.glob("*/*.response.json"))[:200]:
         data = read_json(p)
-        if data:
-            walk_for_types(data.get("response"), resp_types)
+        if not data:
+            continue
+        resp = data.get("response")
+        walk_for_types(resp, resp_types)
+        if isinstance(resp, dict):
+            for choice in resp.get("choices") or []:
+                if not isinstance(choice, dict):
+                    continue
+                msg = choice.get("message")
+                if not isinstance(msg, dict):
+                    continue
+                if isinstance(msg.get("content"), str) and msg["content"].strip():
+                    oa_content = True
+                if msg.get("tool_calls"):
+                    oa_tool_calls = True
+                if msg.get("thinking_blocks") or msg.get("reasoning_content"):
+                    oa_reasoning = True
+
     interesting = {t for t in resp_types if t in
                    {"text", "thinking", "tool_use", "redacted_thinking"}}
+    oa_seen = [n for n, present in (("content", oa_content),
+                                    ("tool_calls", oa_tool_calls),
+                                    ("reasoning", oa_reasoning)) if present]
+
     if "text" in interesting and ("tool_use" in interesting or "thinking" in interesting):
         report("Response completeness", PASS, "blocks seen: " + ", ".join(sorted(interesting)))
+    elif oa_content and (oa_tool_calls or oa_reasoning):
+        report("Response completeness", PASS,
+               "normalised shape: " + ", ".join(oa_seen))
+    elif oa_seen:
+        report("Response completeness", WARN,
+               "normalised shape: " + ", ".join(oa_seen) +
+               " — run a tool-using prompt to confirm tool calls are captured")
     elif interesting:
         report("Response completeness", WARN,
-               "blocks seen: " + ", ".join(sorted(interesting)) +
-               " — run a tool-using prompt to confirm tool_use is captured")
+               "blocks seen: " + ", ".join(sorted(interesting)))
     else:
         report("Response completeness", FAIL,
-               "no recognisable Anthropic content blocks — response is normalised away")
+               "no recognisable content in either the Anthropic or the normalised "
+               "shape — response is normalised away")
 
     # --- 4. prompt caching survived the proxy ---------------------------
     per_session = defaultdict(list)

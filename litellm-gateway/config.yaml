@@ -24,20 +24,19 @@ model_list:
       model: anthropic/claude-haiku-4-5
       api_key: os.environ/ANTHROPIC_API_KEY
 
-  # Specific version IDs that Claude Code uses
+  # Pinned version IDs. Claude Code sometimes sends the bare alias
+  # (claude-haiku-4-5) and sometimes a dated ID, depending on the release — real
+  # captured traffic shows both — so any dated ID it may ask for must be listed
+  # here too, or the request is refused before it reaches Anthropic.
+  #
+  # ONLY ADD IDS THAT ACTUALLY EXIST. Verified 21 Aug 2026: this one is live.
+  # Two guessed IDs (claude-opus-5-20250805, claude-sonnet-5-20250514) were
+  # removed after Anthropic returned `not_found_error` for both — a wrong dated
+  # ID here fails at request time, which reads as "that model is broken".
+  # Confirm a new ID with a real call before relying on it.
   - model_name: claude-haiku-4-5-20251001
     litellm_params:
       model: anthropic/claude-haiku-4-5-20251001
-      api_key: os.environ/ANTHROPIC_API_KEY
-
-  - model_name: claude-opus-5-20250805
-    litellm_params:
-      model: anthropic/claude-opus-5-20250805
-      api_key: os.environ/ANTHROPIC_API_KEY
-
-  - model_name: claude-sonnet-5-20250514
-    litellm_params:
-      model: anthropic/claude-sonnet-5-20250514
       api_key: os.environ/ANTHROPIC_API_KEY
 
 general_settings:
