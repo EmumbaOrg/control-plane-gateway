@@ -33,12 +33,19 @@ services:
       # Dump the first N raw callback payloads so we can see exactly what
       # LiteLLM hands us. This is how we answer "is the full body captured?"
       CAPTURE_KWARGS_DUMPS: "5"
-      LITELLM_LOG: DEBUG
+      # INFO, not DEBUG: DEBUG logs full request/response bodies (slow, and a
+      # second copy of prompts in the container logs). Switch back to DEBUG only
+      # while actively debugging the gateway itself.
+      LITELLM_LOG: INFO
+      # Single-worker PoC: budgets are enforced correctly against one in-memory
+      # counter, so the "no Redis" banner is informational here. Add Redis before
+      # running multiple workers or trusting budget caps in production.
+      LITELLM_DISABLE_NO_REDIS_WARNING: "true"
     volumes:
       - ./config.yaml:/app/config.yaml:ro
       - ./custom_capture.py:/app/custom_capture.py:ro
       - ./capture:/app/capture
-    command: ["--config", "/app/config.yaml", "--detailed_debug"]
+    command: ["--config", "/app/config.yaml"]
 
 volumes:
   pgdata:
