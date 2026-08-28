@@ -1,0 +1,9 @@
+{
+  "name": "emumba-react",
+  "version": "0.1.0",
+  "description": "React and Next.js skills vetted for Emumba engineering, distributed through the LiteLLM gateway marketplace.",
+  "author": {
+    "name": "Emumba"
+  },
+  "keywords": ["react", "nextjs", "performance", "emumba"]
+}
