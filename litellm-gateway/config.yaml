@@ -39,6 +39,417 @@ model_list:
       model: anthropic/claude-haiku-4-5-20251001
       api_key: os.environ/ANTHROPIC_API_KEY
 
+  # ---------------------------------------------------------------------------
+  # Non-Anthropic models, via OpenRouter. See ../docs/NON-ANTHROPIC-MODELS.md.
+  #
+  # These are ADDITIVE: nothing above changed, and if OPENROUTER_API_KEY is
+  # unset the proxy still boots and the Anthropic routes still work — only a
+  # call to one of these aliases fails. Existing virtual keys are unaffected
+  # because a key's `models` list does not include them.
+  #
+  # Reaching these requires ANTHROPIC_BASE_URL=http://localhost:4000 (the
+  # native /v1/messages route, "Candidate A" in README.md). The /anthropic
+  # passthrough route CANNOT serve them — it forwards the body to Anthropic
+  # unchanged, so there is no translation step.
+  #
+  # `drop_params: true` is set PER MODEL here, deliberately, and the global
+  # `drop_params: false` below is left alone. Claude Code sends Anthropic-only
+  # params (`output_config` is the known one, LiteLLM issue #22963) that
+  # OpenAI-format providers reject with a hard 400. Dropping them is the
+  # tradeoff that makes these routes work at all — and it is exactly the
+  # silent-capability-loss risk the comment below warns about, which is why it
+  # is confined to these five entries and never applied to Anthropic traffic.
+  #
+  # Model IDs verified against https://openrouter.ai/api/v1/models on
+  # 25 Aug 2026; all five report `tools` support. OpenRouter retires IDs, so
+  # re-check with `curl -s https://openrouter.ai/api/v1/models` before
+  # blaming the gateway for a `not_found_error`.
+  #
+  # `model_info` costs are MANDATORY here, not decoration. None of these IDs
+  # are in LiteLLM's built-in cost map (the proxy logs a `register_model`
+  # warning for each on boot), and without explicit costs every call is
+  # priced at $0 — spend logs read zero and `max_budget` on a virtual key
+  # never trips. That would quietly disable the budget enforcement this whole
+  # PoC exists to demonstrate, so it is the most important thing on these
+  # entries. Prices are USD per token, from the OpenRouter catalogue on
+  # 25 Aug 2026; re-check them when you re-check the IDs.
+  # Cheapest of the set — use this one to prove the plumbing, the same way
+  # claude-haiku-4-5 is used for the Anthropic side.
+  - model_name: gemini-3.7-flash
+    litellm_params:
+      model: openrouter/google/gemini-3.7-flash
+      api_key: os.environ/OPENROUTER_API_KEY
+      drop_params: true
+    model_info:
+      input_cost_per_token: 0.000000375
+      output_cost_per_token: 0.000001875
+      cache_read_input_token_cost: 0.0000000375
+      cache_creation_input_token_cost: 0.0000000208
+
+  - model_name: deepseek-v4-pro
+    litellm_params:
+      model: openrouter/deepseek/deepseek-v4-pro
+      api_key: os.environ/OPENROUTER_API_KEY
+      drop_params: true
+    model_info:
+      input_cost_per_token: 0.000000579072
+      output_cost_per_token: 0.000001158144
+      cache_read_input_token_cost: 0.000000048256
+
+  - model_name: glm-5.3
+    litellm_params:
+      model: openrouter/z-ai/glm-5.3
+      api_key: os.environ/OPENROUTER_API_KEY
+      drop_params: true
+    model_info:
+      input_cost_per_token: 0.0000014
+      output_cost_per_token: 0.0000044
+      cache_read_input_token_cost: 0.00000026
+
+  # Zero-cost route, for proving the plumbing on a free-tier OpenRouter
+  # account. This exists because of a real failure: OpenRouter refuses a
+  # free-tier request whose `max_tokens` exceeds the remaining credit, and
+  # Claude Code asks for 32000, so every paid model above returns HTTP 402
+  # until the account has credit. A `:free` model has no such gate.
+  #
+  # 1M context and a 65536 output ceiling, so it clears Claude Code's 32000 ask.
+  # Costs are genuinely 0 — the explicit zeros are here so the entry is not
+  # mistaken for a missing-cost bug like the one described above.
+  #
+  # Not every `:free` model works: `thinkingmachines/inkling:free` returns
+  # 403 "only available on agentic harnesses", and `poolside/laguna-s-2.1:free`
+  # rate-limits immediately. This one was picked by probing. Free capacity is
+  # best-effort and can 429 or 502 at any time — fine for a smoke test, not
+  # something to demo on.
+  - model_name: nemotron-free
+    litellm_params:
+      model: openrouter/nvidia/nemotron-3.5-lightning:free
+      api_key: os.environ/OPENROUTER_API_KEY
+      drop_params: true
+    model_info:
+      input_cost_per_token: 0.0
+      output_cost_per_token: 0.0
+
+  # ---------------------------------------------------------------------------
+  # Zero-cost OpenRouter routes. Added 27 Aug 2026 after the paid OpenAI routes
+  # were removed: this account has no OpenRouter balance, and a paid route on a
+  # near-zero balance fails with HTTP 402 before it reaches the provider
+  # ("you requested up to 32000 tokens, but can only afford 2210"), which reads
+  # as a broken model rather than an empty wallet.
+  #
+  # Selected from https://openrouter.ai/api/v1/models on 27 Aug 2026 by three
+  # filters: prompt AND completion price of exactly 0, `tools` in
+  # supported_parameters (Claude Code cannot run without tool calling), and an
+  # output ceiling >= 16384 so a capped max_tokens still fits. 20 free models
+  # were listed; 15 passed; these four are the largest of those.
+  #
+  # DELIBERATELY NOT INCLUDED, both previously tested and recorded above:
+  # thinkingmachines/inkling:free (403, "only available on agentic harnesses")
+  # and poolside/laguna-s-2.1:free (rate-limits immediately).
+  #
+  # Free capacity is best-effort and can 429 or 502 at any time. Fine for
+  # proving the plumbing; do not demo on it. Explicit zero costs, so these are
+  # not mistaken for the missing-cost bug described above — and note LiteLLM
+  # logs "Skipping all budget checks for zero-cost model", so max_budget does
+  # not constrain them at all.
+  # 1M context, 943k output ceiling — the largest free route in the catalogue.
+  - model_name: minimax-m3-free
+    litellm_params:
+      model: openrouter/minimax/minimax-m3:free
+      api_key: os.environ/OPENROUTER_API_KEY
+      drop_params: true
+    model_info:
+      input_cost_per_token: 0.0
+      output_cost_per_token: 0.0
+
+  # Free sibling of the paid glm-5.3 above; 256k context, 230k output.
+  - model_name: glm-5.2-free
+    litellm_params:
+      model: openrouter/z-ai/glm-5.2:free
+      api_key: os.environ/OPENROUTER_API_KEY
+      drop_params: true
+    model_info:
+      input_cost_per_token: 0.0
+      output_cost_per_token: 0.0
+
+  # 262k context, 235k output. Far larger than nemotron-free, which is too small for the harness.
+  - model_name: nemotron-super-120b-free
+    litellm_params:
+      model: openrouter/nvidia/nemotron-3-super-120b-a12b:free
+      api_key: os.environ/OPENROUTER_API_KEY
+      drop_params: true
+    model_info:
+      input_cost_per_token: 0.0
+      output_cost_per_token: 0.0
+
+  # Code-focused, 256k context, 64k output.
+  - model_name: north-mini-code-free
+    litellm_params:
+      model: openrouter/cohere/north-mini-code:free
+      api_key: os.environ/OPENROUTER_API_KEY
+      drop_params: true
+    model_info:
+      input_cost_per_token: 0.0
+      output_cost_per_token: 0.0
+
+  # 512k context, 460k output. Second-largest free route. Preview model — expect churn.
+  - model_name: dots3-note-free
+    litellm_params:
+      model: openrouter/dots-studio/dots-3-note-preview:free
+      api_key: os.environ/OPENROUTER_API_KEY
+      drop_params: true
+    model_info:
+      input_cost_per_token: 0.0
+      output_cost_per_token: 0.0
+
+  # Largest free model by parameter count; 1M context, 65k output.
+  - model_name: nemotron-ultra-550b-free
+    litellm_params:
+      model: openrouter/nvidia/nemotron-3-ultra-550b-a55b:free
+      api_key: os.environ/OPENROUTER_API_KEY
+      drop_params: true
+    model_info:
+      input_cost_per_token: 0.0
+      output_cost_per_token: 0.0
+
+  # Previous-generation sibling of minimax-m3-free; useful as a fallback when M3 is capacity-limited.
+  - model_name: minimax-m27-free
+    litellm_params:
+      model: openrouter/minimax/minimax-m2.7:free
+      api_key: os.environ/OPENROUTER_API_KEY
+      drop_params: true
+    model_info:
+      input_cost_per_token: 0.0
+      output_cost_per_token: 0.0
+
+  # UNTESTED. Its larger sibling thinkingmachines/inkling:free returns 403 "only available on agentic harnesses"; this one may do the same. Probe before relying on it.
+  - model_name: inkling-small-free
+    litellm_params:
+      model: openrouter/thinkingmachines/inkling-small:free
+      api_key: os.environ/OPENROUTER_API_KEY
+      drop_params: true
+    model_info:
+      input_cost_per_token: 0.0
+      output_cost_per_token: 0.0
+
+  # Smallest of the set at 32k output, but a well-known open-weights model — a useful control when a larger free route misbehaves.
+  - model_name: gemma-4-31b-free
+    litellm_params:
+      model: openrouter/google/gemma-4-31b-it:free
+      api_key: os.environ/OPENROUTER_API_KEY
+      drop_params: true
+    model_info:
+      input_cost_per_token: 0.0
+      output_cost_per_token: 0.0
+
+  # ---------------------------------------------------------------------------
+  # Groq. Added because the OpenRouter free tier could not fund Claude Code's
+  # 32000-token max_tokens request, and the one free model that did work
+  # (nemotron-free) is far too small for Claude Code's system prompt — it
+  # answered "hi" by exploring the repo and reading .env. These are large
+  # models on a usable free tier.
+  #
+  # No `model_info` block needed, unlike the OpenRouter entries: both IDs are
+  # in LiteLLM's built-in cost map with correct prices, a 65536 output ceiling
+  # and supports_function_calling=true. Verified in the running container's
+  # model_prices_and_context_window_backup.json on 27 Aug 2026. Check
+  # `GET /model/info` after any image change — if a price ever reads 0, pin it
+  # explicitly the way the OpenRouter entries do, or budgets stop working.
+  #
+  # The 65536 output ceiling is the reason only these two are here. Groq also
+  # serves qwen/qwen3.6-27b and qwen3.8-27b, but both cap output at 16384,
+  # below what Claude Code asks for.
+  - model_name: groq-gpt-oss-120b
+    litellm_params:
+      model: groq/openai/gpt-oss-120b
+      api_key: os.environ/GROQ_API_KEY
+      drop_params: true
+
+  # Smaller and faster, half the price. Use it for smoke tests.
+  - model_name: groq-gpt-oss-20b
+    litellm_params:
+      model: groq/openai/gpt-oss-20b
+      api_key: os.environ/GROQ_API_KEY
+      drop_params: true
+
+  # ---------------------------------------------------------------------------
+  # Claude-shaped aliases, so the non-Anthropic models appear in the Claude
+  # Code desktop app's model picker. See ../docs/NON-ANTHROPIC-MODELS.md.
+  #
+  # WHY RENAMING IS THE ONLY ROUTE. The app applies the same Anthropic-name
+  # check TWICE — once when filtering /v1/models discovery, and again in
+  # jkt() when it builds the picker list itself:
+  #
+  #   uo('gateway', id) -> vge(id) -> lo(id)
+  #   lo(id) = DENY.test(id) ? false : ALLOW.some(w => id.includes(w))
+  #
+  # `anthropic_family_tier` gets a model past the FIRST check only. It never
+  # gets a row into the picker — its actual job is pinning bare tier aliases
+  # (`sonnet`, `opus`) to a model. So the id itself has to pass `lo()`.
+  #
+  # NAMING RULE, and this is the whole trick: DENY is a hard veto evaluated
+  # FIRST, and it lists vendors — gemini, gpt, glm, deepseek, nemotron,
+  # codex, openai, qwen, llama, grok, mistral, kimi and more. The previous
+  # `claude-<tier>-via-<real model>` scheme named its vendor in every entry
+  # and so vetoed all eight of its own aliases. These names carry the tier
+  # and a VENDOR-FREE abbreviation instead: oai-52, gmn-37-flash, dsk-v4-pro,
+  # zai-53, nvda-free, groq-oss-120b. Each was checked against DENY
+  # individually — note `dsk` avoids both `\bds-` and `dpsk`, and `oai`
+  # avoids `openai`.
+  #
+  # The ids are cryptic on purpose; picker-shim/nginx.conf rewrites
+  # `display_name` so the picker LABEL still reads "GPT-5.2 (gateway)".
+  #
+  # These are ADDITIVE. Every honest alias above still works, so claude-gw.sh,
+  # existing virtual keys and every documented curl are unaffected. Prefer the
+  # honest names for scripting; these exist for the picker.
+  #
+  # The tier in the name is a capability hint — Claude Code infers context
+  # window and output ceiling from it — not a claim about the model. Audit
+  # trails are unaffected: spend logs and capture record the UPSTREAM id
+  # (openrouter/google/gemini-3.7-flash), not the alias.
+  #
+  # Costs are duplicated from the honest entries deliberately. Cost lookup
+  # keys on litellm_params.model, but the OpenRouter ids are absent from
+  # LiteLLM's cost map, so an alias without model_info prices at $0 and
+  # max_budget stops tripping. The Groq pair needs none, same as above.
+  #
+  # AFTER ADDING ANY ALIAS HERE: add it to the virtual key's allowlist, add a
+  # display_name rule to picker-shim/nginx.conf, and check the new name
+  # against DENY — or it silently never reaches the picker.
+  - model_name: claude-haiku-4-5-gmn-37-flash
+    litellm_params:
+      model: openrouter/google/gemini-3.7-flash
+      api_key: os.environ/OPENROUTER_API_KEY
+      drop_params: true
+    model_info:
+      input_cost_per_token: 0.000000375
+      output_cost_per_token: 0.000001875
+      cache_read_input_token_cost: 0.0000000375
+      cache_creation_input_token_cost: 0.0000000208
+
+  - model_name: claude-sonnet-4-5-dsk-v4-pro
+    litellm_params:
+      model: openrouter/deepseek/deepseek-v4-pro
+      api_key: os.environ/OPENROUTER_API_KEY
+      drop_params: true
+    model_info:
+      input_cost_per_token: 0.000000579072
+      output_cost_per_token: 0.000001158144
+      cache_read_input_token_cost: 0.000000048256
+
+  - model_name: claude-sonnet-4-5-zai-53
+    litellm_params:
+      model: openrouter/z-ai/glm-5.3
+      api_key: os.environ/OPENROUTER_API_KEY
+      drop_params: true
+    model_info:
+      input_cost_per_token: 0.0000014
+      output_cost_per_token: 0.0000044
+      cache_read_input_token_cost: 0.00000026
+
+  - model_name: claude-haiku-4-5-nvda-free
+    litellm_params:
+      model: openrouter/nvidia/nemotron-3.5-lightning:free
+      api_key: os.environ/OPENROUTER_API_KEY
+      drop_params: true
+    model_info:
+      input_cost_per_token: 0.0
+      output_cost_per_token: 0.0
+
+  - model_name: claude-sonnet-4-5-groq-oss-120b
+    litellm_params:
+      model: groq/openai/gpt-oss-120b
+      api_key: os.environ/GROQ_API_KEY
+      drop_params: true
+
+  - model_name: claude-haiku-4-5-groq-oss-20b
+    litellm_params:
+      model: groq/openai/gpt-oss-20b
+      api_key: os.environ/GROQ_API_KEY
+      drop_params: true
+
+  - model_name: claude-sonnet-4-5-mmx-m3-free
+    litellm_params:
+      model: openrouter/minimax/minimax-m3:free
+      api_key: os.environ/OPENROUTER_API_KEY
+      drop_params: true
+    model_info:
+      input_cost_per_token: 0.0
+      output_cost_per_token: 0.0
+
+  - model_name: claude-sonnet-4-5-zai-52-free
+    litellm_params:
+      model: openrouter/z-ai/glm-5.2:free
+      api_key: os.environ/OPENROUTER_API_KEY
+      drop_params: true
+    model_info:
+      input_cost_per_token: 0.0
+      output_cost_per_token: 0.0
+
+  - model_name: claude-sonnet-4-5-nvda-super-120b-free
+    litellm_params:
+      model: openrouter/nvidia/nemotron-3-super-120b-a12b:free
+      api_key: os.environ/OPENROUTER_API_KEY
+      drop_params: true
+    model_info:
+      input_cost_per_token: 0.0
+      output_cost_per_token: 0.0
+
+  - model_name: claude-haiku-4-5-north-mini-code-free
+    litellm_params:
+      model: openrouter/cohere/north-mini-code:free
+      api_key: os.environ/OPENROUTER_API_KEY
+      drop_params: true
+    model_info:
+      input_cost_per_token: 0.0
+      output_cost_per_token: 0.0
+
+  - model_name: claude-sonnet-4-5-dots3-note-free
+    litellm_params:
+      model: openrouter/dots-studio/dots-3-note-preview:free
+      api_key: os.environ/OPENROUTER_API_KEY
+      drop_params: true
+    model_info:
+      input_cost_per_token: 0.0
+      output_cost_per_token: 0.0
+
+  - model_name: claude-sonnet-4-5-nvda-ultra-550b-free
+    litellm_params:
+      model: openrouter/nvidia/nemotron-3-ultra-550b-a55b:free
+      api_key: os.environ/OPENROUTER_API_KEY
+      drop_params: true
+    model_info:
+      input_cost_per_token: 0.0
+      output_cost_per_token: 0.0
+
+  - model_name: claude-sonnet-4-5-mmx-m27-free
+    litellm_params:
+      model: openrouter/minimax/minimax-m2.7:free
+      api_key: os.environ/OPENROUTER_API_KEY
+      drop_params: true
+    model_info:
+      input_cost_per_token: 0.0
+      output_cost_per_token: 0.0
+
+  - model_name: claude-sonnet-4-5-tm-inkling-small-free
+    litellm_params:
+      model: openrouter/thinkingmachines/inkling-small:free
+      api_key: os.environ/OPENROUTER_API_KEY
+      drop_params: true
+    model_info:
+      input_cost_per_token: 0.0
+      output_cost_per_token: 0.0
+
+  - model_name: claude-sonnet-4-5-goog-g4-31b-free
+    litellm_params:
+      model: openrouter/google/gemma-4-31b-it:free
+      api_key: os.environ/OPENROUTER_API_KEY
+      drop_params: true
+    model_info:
+      input_cost_per_token: 0.0
+      output_cost_per_token: 0.0
+
 general_settings:
   master_key: os.environ/LITELLM_MASTER_KEY
   database_url: os.environ/DATABASE_URL

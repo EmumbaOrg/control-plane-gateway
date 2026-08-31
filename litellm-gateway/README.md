@@ -18,6 +18,13 @@ then settles the adopt / hybrid / build decision.
 | `custom_capture.py` | The capture itself, plus a raw-payload dump for the first few calls |
 | `verify.py` | Scorecard over the capture directory |
 | `capture/` | Output. `<session-id>/*.json.gz`, `index.jsonl`, `_kwargs/` |
+| `skills-inject.json` | Which skills the gateway injects into matching requests, and their triggers |
+| `verify_modify.py` | Offline scorecard for the request-modification hook |
+
+Documentation lives in [`../docs/`](../docs/) — start with
+[`GATEWAY-OVERVIEW.md`](../docs/GATEWAY-OVERVIEW.md), and see
+[`NON-ANTHROPIC-MODELS.md`](../docs/NON-ANTHROPIC-MODELS.md) for non-Anthropic
+routing and [`GATEWAY-MODIFY.md`](../docs/GATEWAY-MODIFY.md) for request modification.
 
 **Every config key in `config.yaml` should be verified against the LiteLLM docs
 for the image tag you pull.** Key names move between releases:

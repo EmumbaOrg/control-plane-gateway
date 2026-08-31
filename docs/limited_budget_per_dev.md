@@ -38,7 +38,7 @@ Pick one deliberately:
 |---|---|---|
 | **Key** | Quick demo, throwaway credential | Budget dies with the key. Re-minting a lost key resets spend to zero |
 | **Internal User** | **Real per-developer caps — prefer this** | Cap follows the person across every key they hold |
-| **Team** | A shared departmental pool | Members draw from one allowance; see [FINDINGS-BUDGETS.md](FINDINGS-BUDGETS.md) |
+| **Team** | A shared departmental pool | Members draw from one allowance; team budgets are not documented yet |
 
 ## Route 1 — Budget on the key
 
@@ -324,8 +324,8 @@ The refusal then names the user rather than the key, and the ceiling holds acros
 every key they hold.
 
 **A shared pool carved into per-developer shares** (e.g. $5 total, $1 each) —
-that needs a team. See [FINDINGS-BUDGETS.md](FINDINGS-BUDGETS.md), which also
-documents two gaps worth knowing first: LiteLLM does not stop you over-allocating
+that needs a team, which is not documented here. Two gaps to know before
+trying it: LiteLLM does not stop you over-allocating
 the pool, and an overridden member allocation silently never resets unless you
 pass `budget_duration` explicitly.
 

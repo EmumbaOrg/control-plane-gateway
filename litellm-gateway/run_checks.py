@@ -11,7 +11,7 @@ something the gateway changed.
     cd stub && uv run --with fastapi --with "uvicorn[standard]" \
         uvicorn stub_upstream:app --port 8080
 
-    # terminal 2 — LiteLLM pointed at the stub (see STUB.md)
+    # terminal 2 — LiteLLM pointed at the stub (see ../docs/STUB.md)
     docker compose -f docker-compose.yml -f docker-compose.stub.yml up
 
     # terminal 3

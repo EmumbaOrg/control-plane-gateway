@@ -468,7 +468,7 @@ models.
 | `README.md` | How to run the gateway and the nine fidelity checks to perform |
 | `DEMO.md` | The full walkthrough: configuration, flow, and a real captured session analysed |
 | `FINDINGS.md` | Results of the 16-point fidelity test (15 pass) and the `anthropic-beta` root-cause analysis |
-| `LITELLM-FLOW.md` | Status of the LiteLLM approach — what works, what remains |
+| `PROJECT-STATUS.md` | Status report — action items, what is proven, what is open |
 | `STUB.md` | How to run the fidelity checks with no API key and no spend |
 | `run_checks.py` | The 16-point fidelity harness, driven with Claude-Code-shaped requests |
 | `stub/stub_upstream.py` | A fake Anthropic upstream that records what it received and can misbehave on cue |
@@ -550,4 +550,4 @@ verified, and it is what Claude Code sends most often in real captured traffic.
 
 ---
 
-Related: `litellm-gateway/DEMO.md` (fuller walkthrough) · `litellm-gateway/FINDINGS.md` (fidelity results) · `litellm-gateway/LITELLM-FLOW.md` (status and what remains).
+Related: `DEMO.md` (fuller walkthrough) · `FINDINGS.md` (fidelity results) · `PROJECT-STATUS.md` (status and what remains).

@@ -10,17 +10,25 @@ server.
 | Path | Purpose |
 |---|---|
 | `litellm-gateway/` | LiteLLM proxy + PostgreSQL, with a custom capture callback |
+| `plugins/emumba-react/` | Skills plugin distributed to developers through the gateway |
 | `capture-tap/` | A thin byte-level tap in the data path — the alternative approach |
-| `Emumba_PoC_Enterprise_Control_Plane.html` | PoC overview |
+| `docs/` | Everything below |
 
-Start with [`litellm-gateway/DEMO.md`](litellm-gateway/DEMO.md) — configuration,
-flow diagrams, usage, and a walkthrough of a real captured session.
+Start with [`docs/GATEWAY-OVERVIEW.md`](docs/GATEWAY-OVERVIEW.md) — what was built
+and why, in diagrams. Then [`docs/DEMO.md`](docs/DEMO.md) for configuration, usage,
+and a walkthrough of a real captured session.
 
-Supporting documents:
-
-- [`litellm-gateway/FINDINGS.md`](litellm-gateway/FINDINGS.md) — fidelity test results (15 of 16 checks pass) and the `anthropic-beta` root-cause analysis
-- [`litellm-gateway/LITELLM-FLOW.md`](litellm-gateway/LITELLM-FLOW.md) — status and what remains
-- [`litellm-gateway/STUB.md`](litellm-gateway/STUB.md) — how to run the fidelity checks with no API key and no spend
+| Document | What it covers |
+|---|---|
+| [`GATEWAY-OVERVIEW.md`](docs/GATEWAY-OVERVIEW.md) | The whole design in seven sections, with flow diagrams |
+| [`DEMO.md`](docs/DEMO.md) | Configuration, usage, and a real captured session analysed |
+| [`SETUP.md`](docs/SETUP.md) | Building the same gateway from scratch, no repository needed |
+| [`PROJECT-STATUS.md`](docs/PROJECT-STATUS.md) | Status report — action items, what is proven, what is open |
+| [`GATEWAY-MODIFY.md`](docs/GATEWAY-MODIFY.md) | Modifying requests in flight: output clamp, secret redaction, skill injection |
+| [`NON-ANTHROPIC-MODELS.md`](docs/NON-ANTHROPIC-MODELS.md) | Running Gemini / DeepSeek / GLM in Claude Code through this gateway |
+| [`limited_budget_per_dev.md`](docs/limited_budget_per_dev.md) | Setting a per-developer budget, and proving it stops spend |
+| [`FINDINGS.md`](docs/FINDINGS.md) | Fidelity results (15 of 16 checks) and the `anthropic-beta` root-cause analysis |
+| [`STUB.md`](docs/STUB.md) | Running the fidelity checks with no API key and no spend |
 
 ## Running it
 
@@ -57,7 +65,7 @@ unset ANTHROPIC_API_KEY
 claude
 ```
 
-Full instructions, including the desktop app, are in `DEMO.md`.
+Full instructions, including the desktop app, are in [`docs/DEMO.md`](docs/DEMO.md).
 
 ## Data handling
 
@@ -74,11 +82,11 @@ git status --porcelain --ignored | grep capture
 ```
 
 Retention, access, and storage location for the capture store are open policy
-questions — see the closing section of `litellm-gateway/DEMO.md`.
+questions — see the closing section of [`docs/DEMO.md`](docs/DEMO.md).
 
 ## Status
 
 This is a proof of concept running on `localhost`. It is not hardened for shared
 use: PostgreSQL is published to the host, there is no TLS, and secrets are read
-from a local file. See `DEMO.md` for the rollout checklist and the open
+from a local file. See [`docs/DEMO.md`](docs/DEMO.md) for the rollout checklist and the open
 adopt / hybrid / build decision.
