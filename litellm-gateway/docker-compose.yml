@@ -28,6 +28,11 @@ services:
       # Read from your shell. Export both before `docker compose up`.
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:?export ANTHROPIC_API_KEY first}
       LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY:?export LITELLM_MASTER_KEY first}
+      # Non-Anthropic models (see ../docs/NON-ANTHROPIC-MODELS.md). `:-` not `:?` on
+      # purpose: this is optional, so anyone running the Anthropic-only setup
+      # is unaffected by its absence.
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      GROQ_API_KEY: ${GROQ_API_KEY:-}
       DATABASE_URL: postgresql://litellm:litellm@postgres:5432/litellm
       CAPTURE_DIR: /app/capture
       # Dump the first N raw callback payloads so we can see exactly what
@@ -41,11 +46,61 @@ services:
       # counter, so the "no Redis" banner is informational here. Add Redis before
       # running multiple workers or trusting budget caps in production.
       LITELLM_DISABLE_NO_REDIS_WARNING: "true"
+      # --- Request modification (action item 03) ------------------------------
+      # Server-side output ceiling, applied in custom_capture.py's pre-call hook.
+      # Claude Code reserves 32000 output tokens on every request and providers
+      # gate on the reservation, so low-balance accounts 402 on traffic that
+      # would have used 60 tokens. The CLI can set CLAUDE_CODE_MAX_OUTPUT_TOKENS;
+      # the desktop app cannot, which is why this has to be server-side.
+      # Set to 0 to disable.
+      GATEWAY_MAX_OUTPUT_TOKENS: "${GATEWAY_MAX_OUTPUT_TOKENS:-8000}"
+      # Models the clamp does NOT apply to. Anthropic honours 32000 happily, so
+      # clamping there would truncate long answers for no reason. EXACT matches
+      # only — `claude-haiku-4-5-gmn-37-flash` is a picker alias for Gemini and
+      # would be wrongly exempted by prefix matching.
+      GATEWAY_CLAMP_EXEMPT_MODELS: "${GATEWAY_CLAMP_EXEMPT_MODELS:-claude-opus-5,claude-sonnet-5,claude-haiku-4-5,claude-haiku-4-5-20251001}"
+      # Outbound secret redaction. OFF by default: it rewrites developer content,
+      # so enabling it should be a deliberate decision. See ../docs/GATEWAY-MODIFY.md.
+      GATEWAY_REDACT: "${GATEWAY_REDACT:-off}"
+      # Skill injection: off | installed | always. See ../docs/GATEWAY-MODIFY.md.
+      #   installed (default) — only for developers who already have the plugin
+      #     enabled. Fixes the measured failure (installed, offered, never
+      #     called) without touching the prompts of people who never opted in.
+      #   always — central enforcement in the strong sense. Also rewrites the
+      #     prompts of non-adopters, including anyone doing client work under
+      #     different standards. A deliberate decision with a named owner.
+      GATEWAY_INJECT_SKILLS: "${GATEWAY_INJECT_SKILLS:-installed}"
+      GATEWAY_SKILL_MANIFEST: /app/skills-inject.json
+      # Empty means every model. Set to an exact-match list to narrow it — e.g.
+      # to the translated routes only, if you trust native activation on
+      # Anthropic and want the tokens back.
+      GATEWAY_INJECT_SKILL_MODELS: "${GATEWAY_INJECT_SKILL_MODELS:-}"
+      GATEWAY_INJECT_MAX_CHARS: "${GATEWAY_INJECT_MAX_CHARS:-20000}"
     volumes:
       - ./config.yaml:/app/config.yaml:ro
       - ./custom_capture.py:/app/custom_capture.py:ro
       - ./capture:/app/capture
+      # The injectable skills, mounted from the plugin the marketplace serves —
+      # the same SKILL.md, not a copy, so the two delivery paths cannot drift.
+      - ./skills-inject.json:/app/skills-inject.json:ro
+      - ../plugins/emumba-react/skills:/app/skills:ro
     command: ["--config", "/app/config.yaml"]
+
+  # Model-picker shim for the Claude Code desktop app. Rewrites GET /v1/models
+  # to add `anthropic_family_tier`, which is what gets the non-Anthropic models
+  # past the app's discovery filter; every other route is proxied through
+  # untouched. See picker-shim/nginx.conf for the filter rule it works around.
+  #
+  # Additive and optional: port 4000 is unchanged, so the CLI, claude-gw.sh and
+  # every documented curl are unaffected. Only the desktop app points at 4001.
+  picker-shim:
+    image: nginx:1.27-alpine
+    depends_on:
+      - litellm
+    ports:
+      - "4001:4001"
+    volumes:
+      - ./picker-shim/nginx.conf:/etc/nginx/nginx.conf:ro
 
 volumes:
   pgdata:

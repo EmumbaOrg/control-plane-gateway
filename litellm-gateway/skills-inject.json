@@ -1,0 +1,22 @@
+{
+  "_comment": [
+    "Skills the gateway injects into matching requests, so they apply on every",
+    "model rather than only on models strong enough to call the Skill tool.",
+    "See GATEWAY-MODIFY.md, behaviour 3.",
+    "",
+    "`path` points at the SAME SKILL.md the plugin marketplace distributes —",
+    "one source of truth, two delivery paths. Do not copy the file here; the",
+    "copy would drift and the two paths would teach different things.",
+    "",
+    "`trigger` is a case-insensitive regex matched against recent conversation",
+    "text. It is deliberately generous: a false positive costs a few thousand",
+    "tokens of irrelevant guidance, a false negative costs the entire point."
+  ],
+  "skills": [
+    {
+      "name": "emumba-react:react-best-practices",
+      "path": "/app/skills/react-best-practices/SKILL.md",
+      "trigger": "\\buse(?:Effect|State|Memo|Callback|Ref|Reducer|Context|Transition)\\s*\\(|\\.[jt]sx\\b|use client|\\breact\\b|\\bnext\\.js\\b|\\bjsx\\b|next/(?:link|image|dynamic|navigation)"
+    }
+  ]
+}
