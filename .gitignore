@@ -5,6 +5,9 @@
 .env.*
 !.env.example
 .vkey
+# `.vkey` alone is an exact match. The trailing * covers per-scenario key files
+# (.vkey.budget-test) and backups, which are the same secret in another name.
+.vkey*
 vkey.json
 vkey*.json
 *.key
@@ -23,6 +26,17 @@ capture/
 capture_archive/
 export/
 _kwargs/
+
+# ---------------------------------------------------------------------------
+# Reference documentation — kept locally, not committed
+#
+# The PoC overview deck is guidance to follow while building, not source. It is
+# distributed by hand rather than versioned here.
+#
+# NOTE: this file was already tracked, so ignoring it is not enough on its own —
+# it was untracked with `git rm --cached` in the same commit that added this rule.
+# ---------------------------------------------------------------------------
+Emumba_PoC_Enterprise_Control_Plane.html
 
 # ---------------------------------------------------------------------------
 # Local / OS noise
