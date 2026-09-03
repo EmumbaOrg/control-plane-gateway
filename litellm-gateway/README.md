@@ -13,6 +13,7 @@ then settles the adopt / hybrid / build decision.
 
 | File | What it is |
 |---|---|
+| `gateway-up.sh` | **Start everything with one command** — compose stack *and* the host-side Ollama the local routes need. `--status` to report, `--no-local` to skip Ollama |
 | `docker-compose.yml` | LiteLLM proxy + Postgres |
 | `config.yaml` | Models, master key, DB, and the capture callback wiring |
 | `custom_capture.py` | The capture itself, plus a raw-payload dump for the first few calls |
@@ -47,18 +48,59 @@ for the image tag you pull.** Key names move between releases:
 
 ## Run
 
+Once `.env` holds the provider keys, this is the whole thing:
+
 ```bash
-cd litellm-gateway
-
-export ANTHROPIC_API_KEY="sk-ant-api03-…"     # the real provider key
-export LITELLM_MASTER_KEY="sk-master-local-only"
-
-docker compose up
+./gateway-up.sh
 ```
 
-Wait for the proxy to report it is listening on `:4000`. If it refuses to boot
-complaining about an unknown setting, comment out `store_prompts_in_spend_logs`
-in `config.yaml` — our callback does not depend on it.
+It brings up the compose stack **and** the host-side Ollama that the local
+private-model routes depend on, then smoke-tests both local aliases so a broken
+prerequisite surfaces here instead of as a hung Claude Code session. Every check
+it runs maps to a failure that has actually happened; each prints the fix.
+
+`docker compose up -d` on its own is **not** equivalent. Ollama runs on the
+host, not in compose — a Linux container on macOS has no Metal, so a
+containerised Ollama drops to CPU and an 8B model becomes unusable. The
+consequences of skipping the script:
+
+| Missing prerequisite | Symptom without the script |
+|---|---|
+| `ollama serve` not running | Local routes fail with an upstream error naming the model |
+| `OLLAMA_HOST` not `0.0.0.0` | Ollama binds `127.0.0.1`; Docker's host gateway cannot reach it → connection refused |
+| `OLLAMA_KV_CACHE_TYPE` not `q8_0` | 32k KV cache stays fp16 (~4.7 GB on top of ~5.2 GB of weights); on 16 GB it spills to CPU and **looks like a hang** |
+| Model not pulled | 404 at request time |
+
+`./gateway-up.sh --status` reports without changing anything.
+`./gateway-up.sh --no-local` skips Ollama entirely for a hosted-models-only run.
+
+Then launch Claude Code:
+
+```bash
+./claude-gw.sh local-qwen3-8b
+```
+
+For the **desktop app**, point it at `http://localhost:4001` (the picker shim)
+and choose the `claude-sonnet-4-5-local-q3-8b` row.
+
+### Reboot
+
+Nothing here installs a background service, so after a restart run
+`./gateway-up.sh` again — it will start Ollama itself. Docker Desktop must
+already be running; the script says so if it is not.
+
+### If it will not boot
+
+If the proxy refuses to start complaining about an unknown setting, comment out
+`store_prompts_in_spend_logs` in `config.yaml` — our callback does not depend
+on it.
+
+⚠ **Never `docker compose down -v`.** The `-v` destroys the `pgdata` volume and
+with it every virtual key and all spend history; `.vkey` then 401s with
+"Unable to find token in `LiteLLM_VerificationTokenTable`". Plain `down` is
+safe. Also note that `docker compose restart` reuses the container's baked-in
+environment, so an edited `.env` needs `up -d` (which is what `gateway-up.sh`
+runs) rather than a restart.
 
 ### Mint a developer key
 

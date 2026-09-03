@@ -103,6 +103,76 @@ CLAMP_EXEMPT = {
 # so it should be a deliberate decision, not a default someone inherits.
 REDACT = os.environ.get("GATEWAY_REDACT", "off").lower() in ("1", "true", "on", "yes")
 
+# --- tool slimming, for small-context local models --------------------------
+# THE PROBLEM THIS SOLVES, measured from a real captured request:
+#
+#   tools (33 built-in)   36,212 tok   <- 74% of the whole request
+#   system prompt          9,237 tok
+#   messages               3,188 tok
+#   TOTAL                 48,638 tok   vs a 32,768-token context ceiling
+#
+# `Artifact` alone is ~9,500 tokens. So a local model does not fail because it
+# is small or slow — it fails before inference starts, on a request that cannot
+# fit.
+#
+# WHAT THIS LOOKS LIKE ON OLLAMA, and it is worse than an error. Ollama does
+# NOT reject an oversized request: it silently truncates anything past num_ctx
+# (config.yaml sets 32768 on the ollama_chat/ entries). There is no 400, no
+# warning, and a 200 all the way back to the client — just a model that never
+# saw the end of its own prompt and answers as if the tools and instructions it
+# was given do not exist. Nothing in the stack reports it.
+#
+# MEASURED ON THIS HOST, 3 Sep 2026, ollama_chat/qwen3:8b through the picker
+# alias — from capture/modifications.jsonl, not estimated:
+#
+#   tools_slimmed   36 defs -> 3      ~14,525 tok saved
+#   forwarded request                 19,501 tok   (fits 32,768)
+#   unslimmed equivalent             ~34,000 tok   (would have been truncated)
+#
+# So on this route the hook is not an optimisation, it is the difference
+# between a working model and a silently-lobotomised one.
+#
+# WHY THIS HAS TO BE SERVER-SIDE, and is not just a duplicate of the CLI's
+# `--tools` flag: THE DESKTOP APP HAS NO `--tools` EQUIVALENT. Same gap as the
+# max_tokens clamp above — the CLI has an env var, the app has nothing — so the
+# gateway is the only place that can fix it for both clients at once. Doing it
+# here is what makes a local route usable from the picker at all.
+#
+# Trimming to Read/Edit/Write/Bash takes the request to ~13.5k tokens, leaving
+# ~19k of headroom inside 32,768 for actual conversation.
+#
+# ⚠ THE HONEST COST. The app still OFFERS the features whose tools we removed,
+# and the model simply cannot do them — it will not say "I lack that tool", it
+# will improvise. That is a real usability tax, which is why this is scoped by
+# model name and defaults to local routes only. Do NOT widen the pattern to
+# hosted models to save tokens; there it would silently downgrade a model that
+# had no problem in the first place.
+#
+# Matching is SUBSTRING, unlike CLAMP_EXEMPT above which is deliberately exact.
+# The reason differs: the clamp exempts a few named models and a prefix bug
+# there would silently exempt every translated alias, whereas this must catch
+# both naming schemes for the same route (`local-qwen3-8b` and
+# `claude-sonnet-4-5-local-q3-8b`), which share no prefix. Empty disables.
+SLIM_TOOLS_MATCH = [
+    m.strip() for m in os.environ.get("GATEWAY_SLIM_TOOLS_MODELS", "local-").split(",")
+    if m.strip()
+]
+
+# The tools a coding agent genuinely cannot work without. This exact set was
+# confirmed working end to end against ollama_chat/qwen3:8b before being made
+# the default. Keep it SMALL: every name added here is subtracted from the
+# context left for the conversation, and `Bash` alone is ~2,942 tokens.
+#
+# NOTE WHAT ELSE GETS DROPPED. `Skill` is not in this set, so a local route
+# cannot invoke a skill as a tool at all — which is precisely why the skill
+# INJECTION hook above exists and why it runs before this one. Glob and Grep
+# also go, so file discovery falls back to Bash.
+SLIM_TOOLS_KEEP = {
+    t.strip() for t in os.environ.get(
+        "GATEWAY_SLIM_TOOLS_KEEP", "Read,Edit,Write,Bash",
+    ).split(",") if t.strip()
+}
+
 # Only high-specificity patterns — a vendor-prefixed token or a PEM header, never
 # "looks like entropy". A false positive here silently corrupts a developer's
 # prompt, and they have no way to see that it happened.
@@ -671,6 +741,68 @@ def _log_modification(record: dict) -> None:
         print(f"[modify] audit write failed, continuing: {type(e).__name__}: {e}")
 
 
+def _slim_tools(data: dict, changes: dict) -> None:
+    """Drop tool definitions a small-context local model cannot afford.
+
+    Mutates `data` in place. See SLIM_TOOLS_MATCH for why this is server-side
+    and not left to the CLI's `--tools` flag.
+    """
+    if not SLIM_TOOLS_MATCH or not SLIM_TOOLS_KEEP:
+        return
+
+    model = data.get("model") or ""
+    if not any(m in model for m in SLIM_TOOLS_MATCH):
+        return
+
+    tools = data.get("tools")
+    if not isinstance(tools, list) or not tools:
+        return
+
+    # Both request shapes reach this hook. /v1/messages carries Anthropic-format
+    # tools with a top-level "name"; the OpenAI-format path nests it under
+    # "function". Read both, or the filter silently drops EVERY tool on one of
+    # them — which looks identical to "the model ignored its tools".
+    def _name(t):
+        if not isinstance(t, dict):
+            return ""
+        return t.get("name") or (t.get("function") or {}).get("name") or ""
+
+    kept = [t for t in tools if _name(t) in SLIM_TOOLS_KEEP]
+
+    # Never hand back an empty tools list. An allowlist that matches nothing is
+    # a misconfiguration (a renamed tool, a typo in the env var), and stripping
+    # every tool would break the agent far more thoroughly than the oversized
+    # prompt we are fixing. Leave the request alone and say so in the log.
+    if not kept:
+        changes["tools_slimmed_skipped"] = {
+            "reason": "allowlist matched no tools",
+            "saw": sorted({_name(t) for t in tools if _name(t)})[:40],
+        }
+        return
+
+    if len(kept) == len(tools):
+        return
+
+    dropped = sorted({_name(t) for t in tools if _name(t) not in SLIM_TOOLS_KEEP})
+    before = len(json.dumps(tools))
+    data["tools"] = kept
+
+    # `tool_choice` may name a tool that no longer exists, which is a hard 400
+    # on most providers. Fall back to "auto" rather than leaving a dangling ref.
+    tc = data.get("tool_choice")
+    if isinstance(tc, dict):
+        chosen = tc.get("name") or (tc.get("function") or {}).get("name")
+        if chosen and chosen not in SLIM_TOOLS_KEEP:
+            data["tool_choice"] = {"type": "auto"}
+            changes["tool_choice_reset"] = chosen
+
+    changes["tools_slimmed"] = {
+        "from": len(tools), "to": len(kept),
+        "approx_tokens_saved": (before - len(json.dumps(kept))) // 4,
+        "dropped": dropped,
+    }
+
+
 def _modify(data: dict, call_type: str, key_alias) -> dict:
     """Apply the clamp and the redaction. Returns the same dict, mutated.
 
@@ -702,6 +834,13 @@ def _modify(data: dict, call_type: str, key_alias) -> dict:
     # the credential patterns for no reason.
     if INJECT_MODE != "off":
         _inject_skills(data, changes)
+
+    # --- 4. tool slimming ---------------------------------------------------
+    # LAST, deliberately. Skill injection above grows `system`, and this shrinks
+    # `tools`; running the trim last means the saving it logs is measured
+    # against the request we actually forward, not an intermediate one. It also
+    # keeps the ordering honest if injection ever learns to mention tools.
+    _slim_tools(data, changes)
 
     if changes:
         _log_modification({

@@ -273,6 +273,93 @@ model_list:
       drop_params: true
 
   # ---------------------------------------------------------------------------
+  # Local models, via Ollama on the developer's own machine. No API key, no
+  # provider account, and no prompt leaves the laptop — the private-model
+  # option. See ../docs/NON-ANTHROPIC-MODELS.md.
+  #
+  # `ollama_chat/`, NOT `ollama/`. The two are different providers in LiteLLM:
+  # the plain one uses Ollama's legacy /api/generate completion route, which
+  # has no tool-call support. Claude Code cannot run without tool calling, so
+  # the chat provider is mandatory here, not a preference.
+  #
+  # NETWORKING. LiteLLM runs in a container and Ollama runs on the host, so the
+  # api_base must be host.docker.internal, never localhost. Ollama also binds
+  # 127.0.0.1 by default, which Docker Desktop's host gateway CANNOT reach —
+  # the container gets connection refused. The host must run Ollama with
+  # OLLAMA_HOST=0.0.0.0 for this to work at all. That is the single most likely
+  # cause of a "local model is broken" report.
+  #
+  # CONTEXT WINDOW. `num_ctx` is load-bearing and set deliberately. Ollama
+  # defaults to a 4096-token context and SILENTLY TRUNCATES anything longer —
+  # no error, just a model that has not seen most of its own system prompt and
+  # answers incoherently. Claude Code's system prompt alone is far past 4096.
+  #
+  # 32768 fits an 8B model on a 16 GB Mac ONLY IF the host quantises the KV
+  # cache — at fp16 the cache alone is ~4.7 GB on top of ~5.2 GB of weights,
+  # against a Metal working-set ceiling near 10.5 GB. Start Ollama with
+  # OLLAMA_KV_CACHE_TYPE=q8_0 and the cache drops to ~2.4 GB. Without it,
+  # expect a spill to CPU and a model that appears to hang rather than fail.
+  # See ../docs/NON-ANTHROPIC-MODELS.md for the full arithmetic.
+  #
+  # COSTS ARE NOMINAL, AND THAT IS DELIBERATE. A local model costs nothing per
+  # token, but LiteLLM logs "Skipping all budget checks for zero-cost model" and
+  # a zero-cost route is exempt from `max_budget` entirely — so a key scoped to
+  # local models would have no enforceable ceiling, and spend logs would read
+  # zero for every call. The prices below are a stand-in for compute cost so
+  # attribution and budgets keep working on this route like any other. They are
+  # invented, not billed; do not read the spend figures as money owed.
+  #
+  # MODEL CHOICE. Must support tool calling (`ollama show <model>` lists
+  # `tools` under Capabilities) or Claude Code cannot function. The default
+  # below is sized for the 16 GB M1 Pro this was set up on; swap the tag for
+  # whatever `ollama list` reports on the machine actually running it.
+  # ⚠ `think: false` AND num_ctx 8192 ARE BOTH LOAD-BEARING, and this entry was
+  # broken without them. Measured 3 Sep 2026 through /v1/messages, max_tokens 64,
+  # prompt "Reply with exactly: OK":
+  #     without think:false   9.3s, 64 output tokens ALL spent on a `thinking`
+  #                           block, content[] text == "", stop_reason max_tokens
+  #     with think:false      4.0s, 2 output tokens, text "OK", end_turn
+  # The first case is not slow-but-correct, it is a route that returns NOTHING at
+  # any output budget Claude Code would use for a short answer. See the picker
+  # alias below for the same fix and the client-side half of the story.
+  #
+  # num_ctx 32768 IS A FLOOR HERE, NOT A LUXURY. 8192 was tried first (it is
+  # cheaper and cuts prefill) and Claude Code refused to start on it: the CLI
+  # returned "Prompt is too long" before the first turn, because its system
+  # prompt plus tool definitions plus injected org skills already exceed 8k.
+  # A local route that cannot seat Claude Code's own preamble is not usable at
+  # all, so the window wins over the prefill saving.
+  #
+  # This costs memory and depends on a HOST setting nothing here can enforce:
+  # at fp16 the KV cache alone is ~4.7 GB on top of ~5.2 GB of weights, against
+  # a Metal working-set ceiling near 10.5 GB on the 16 GB M1 Pro this runs on.
+  # Verified on this host 3 Sep 2026 — `ollama serve` carries
+  # OLLAMA_KV_CACHE_TYPE=q8_0 and llama-server is launched with
+  # `--cache-type-k q8_0 --cache-type-v q8_0 --flash-attn auto`, which brings
+  # the cache to ~2.4 GB and fits. On a host WITHOUT that env var, expect a
+  # spill to CPU that looks like a hang rather than an error.
+  # KEEP IN SYNC with claude-gw.sh's DEFAULT_CTX for *local-* (32000).
+  - model_name: local-qwen3-8b
+    litellm_params:
+      model: ollama_chat/qwen3:8b
+      api_base: os.environ/OLLAMA_API_BASE
+      drop_params: true
+      num_ctx: 32768
+      think: false
+    model_info:
+      input_cost_per_token: 0.0000001
+      output_cost_per_token: 0.0000001
+      # DECLARE THE REAL WINDOW. Without these, GET /v1/models advertises
+      # max_input_tokens 200000 / max_output_tokens 64000 for this route —
+      # LiteLLM's generic defaults, not anything Ollama agreed to. The CLI is
+      # protected by claude-gw.sh's CLAUDE_CODE_MAX_CONTEXT_TOKENS, but the
+      # DESKTOP APP HAS NO SUCH ENV VAR: it reads this endpoint, believes 200k,
+      # and builds prompts Ollama then truncates in silence. 32768 matches
+      # num_ctx above; keep the three in step.
+      max_input_tokens: 32768
+      max_output_tokens: 8192
+
+  # ---------------------------------------------------------------------------
   # Claude-shaped aliases, so the non-Anthropic models appear in the Claude
   # Code desktop app's model picker. See ../docs/NON-ANTHROPIC-MODELS.md.
   #
@@ -368,6 +455,48 @@ model_list:
       model: groq/openai/gpt-oss-20b
       api_key: os.environ/GROQ_API_KEY
       drop_params: true
+
+  # Local Ollama route. NOTE THE NAME: `ollama` contains `llama`, which is on
+  # the DENY list, so any alias with the provider's own name in it vetoes
+  # itself and never reaches the picker. `local` is the vendor-free stand-in
+  # and `q3` abbreviates the model. Costs duplicated from the honest entry
+  # above for the reason given there.
+  # THINK IS A TIME-TO-FIRST-TOKEN FIX, not a quality knob.
+  # Symptom they solve: Claude Code sat on "hi, which model is running?" and
+  # never rendered anything, while the gateway logged 200 OK from Ollama and
+  # then "client disconnected before first chunk, upstream LLM request
+  # cancelled". The request was fine; nothing had streamed yet when the client
+  # gave up.
+  #
+  # qwen3:8b advertises `thinking` and emits its whole <think> block BEFORE any
+  # visible content, so time-to-first-VISIBLE-token is prefill plus the entire
+  # reasoning pass. `think: false` removes that block — measured 5.0s end to end
+  # against Ollama directly at num_ctx 8192, versus a client timeout before the
+  # first byte at 32768 with thinking on.
+  #
+  # num_ctx 32768, RAISED BACK FROM 8192. The smaller window was a deliberate
+  # smoke-test value to cut prefill, and it is below what Claude Code actually
+  # sends once system prompt, tool definitions and injected org skills are
+  # counted — the CLI returns "Prompt is too long" and never starts a turn. See
+  # the honest `local-qwen3-8b` entry above for the memory arithmetic and the
+  # host setting (OLLAMA_KV_CACHE_TYPE=q8_0) that makes 32768 fit on 16 GB.
+  # Ollama truncates silently past num_ctx, so keep claude-gw.sh's DEFAULT_CTX
+  # for *local-* (32000) at or under this.
+  - model_name: claude-sonnet-4-5-local-q3-8b
+    litellm_params:
+      model: ollama_chat/qwen3:8b
+      api_base: os.environ/OLLAMA_API_BASE
+      drop_params: true
+      num_ctx: 32768
+      think: false
+    model_info:
+      input_cost_per_token: 0.0000001
+      output_cost_per_token: 0.0000001
+      # THIS IS THE ROUTE THAT NEEDS IT MOST — see the honest entry above.
+      # This alias exists for the desktop app, and the desktop app has no
+      # CLAUDE_CODE_MAX_CONTEXT_TOKENS to correct a wrong advertised window.
+      max_input_tokens: 32768
+      max_output_tokens: 8192
 
   - model_name: claude-sonnet-4-5-mmx-m3-free
     litellm_params:

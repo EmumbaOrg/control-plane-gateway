@@ -88,8 +88,11 @@ note "key      : $VKEY_FILE ${VK:0:8}… (${#VK} chars)"
 Looks like a placeholder or the wrong variable was picked up."
 
 # --- validate against the gateway before launching -------------------------
+# gateway-up.sh, not `docker compose up -d`: compose alone does not start the
+# host-side Ollama the local-* routes depend on, and the failure that leaves
+# behind reads as a broken model rather than a missing prerequisite.
 curl -sf "$GATEWAY/health/readiness" >/dev/null 2>&1 \
-  || die "Gateway not reachable at $GATEWAY. Start it with:  docker compose up -d"
+  || die "Gateway not reachable at $GATEWAY. Start everything with:  ./gateway-up.sh"
 
 export INFO
 INFO="$(curl -s "$GATEWAY/key/info?key=$VK" -H "Authorization: Bearer $MASTER_KEY")"
@@ -129,9 +132,24 @@ else:
     print(f"budget   : unlimited (spend ${spend:.6f})")
 
 allowed = info.get("models") or []
-print(f"models   : {len(allowed)} allowed")
-if allowed and model not in allowed:
-    problems.append(f"'{model}' is not in this key's allowlist. Allowed: {', '.join(allowed)}")
+# `all-proxy-models` / `all-team-models` are LiteLLM wildcard SENTINELS, not
+# model names: they mean "every model this key can reach". Comparing the
+# requested alias against them literally refuses a key that grants everything,
+# which reads as "the model does not exist" — the same class of misleading
+# credential error the rest of this script exists to prevent.
+#
+# This is NOT hypothetical and NOT local-model-specific: the .vkey minted for
+# this PoC carries exactly `["all-proxy-models"]`, so without this branch every
+# model on every route is refused before launch.
+wildcards = {"all-proxy-models", "all-team-models"} & set(allowed)
+if wildcards:
+    print(f"models   : all ({', '.join(sorted(wildcards))})")
+elif not allowed:
+    print("models   : all (no allowlist set)")
+else:
+    print(f"models   : {len(allowed)} allowed")
+    if model not in allowed:
+        problems.append(f"'{model}' is not in this key's allowlist. Allowed: {', '.join(allowed)}")
 
 if problems:
     print("\n\033[31mThis key will not work:\033[0m")
@@ -143,6 +161,55 @@ PY
 
 note "model    : $MODEL"
 note "gateway  : $GATEWAY"
+
+# --- context window default, per route class -------------------------------
+# The 1000000 default below is right for the hosted 1M-context routes and WRONG
+# for a local one. Ollama serves these at num_ctx 32768 (config.yaml) and
+# TRUNCATES silently past it — no error, just a model that has not seen the end
+# of its own prompt. Claude Code told it has a 1M window will happily build one.
+#
+# So local routes default to just under the num_ctx the server allocates:
+# 32000, under the num_ctx 32768 set on every `ollama_chat/` entry in
+# config.yaml.
+#
+# KEEP THIS IN SYNC WITH config.yaml — one setting expressed in two files, and
+# the failure when they drift is silent truncation, not an error.
+#
+# DO NOT LOWER THIS TO SAVE PREFILL TIME. 8000 was tried (tracking a num_ctx
+# 8192 experiment on the qwen3 route) and Claude Code refused to start: "Prompt
+# is too long" before the first turn, because its system prompt plus tool
+# definitions plus injected org skills already exceed 8k. Anything that cannot
+# seat the preamble is not a smaller window, it is a broken route.
+#
+# Matches both naming schemes: the honest `local-*` aliases and the
+# Claude-shaped picker ones (`claude-sonnet-4-5-local-q3-8b`), which is why the
+# pattern looks for `local-` anywhere rather than as a prefix.
+#
+# Still an override, not a floor: an explicit CLAUDE_CODE_MAX_CONTEXT_TOKENS in
+# the environment wins, as before.
+case "$MODEL" in
+  *local-*) DEFAULT_CTX=32000 ;;
+  *)        DEFAULT_CTX=1000000 ;;
+esac
+# --- request timeout, per route class --------------------------------------
+# A local 8B model on this hardware spends minutes in prefill before it emits a
+# single byte, and Claude Code's default wait is far shorter. The observed
+# failure is NOT an error anywhere: the gateway logs 200 OK from Ollama, then
+# "client disconnected before first chunk, upstream LLM request cancelled", and
+# the user sees an empty response. Raising the client's patience is the only
+# fix on this side; think:false and a smaller num_ctx in config.yaml attack the
+# same problem from the server side.
+#
+# 600000ms = 10 minutes, for local routes only — a hosted route that has not
+# answered in ten minutes is hung, and waiting that long on it hides a real
+# fault. Explicit API_TIMEOUT_MS in the environment still wins.
+case "$MODEL" in
+  *local-*) DEFAULT_TIMEOUT_MS=600000 ;;
+  *)        DEFAULT_TIMEOUT_MS=120000 ;;
+esac
+
+note "context  : ${CLAUDE_CODE_MAX_CONTEXT_TOKENS:-$DEFAULT_CTX} tokens"
+note "timeout  : ${API_TIMEOUT_MS:-$DEFAULT_TIMEOUT_MS} ms"
 echo
 
 # CLAUDE_CODE_MAX_CONTEXT_TOKENS: Claude Code does not recognise these aliases
@@ -163,6 +230,7 @@ echo
 exec env -u ANTHROPIC_API_KEY \
   ANTHROPIC_BASE_URL="$GATEWAY" \
   ANTHROPIC_AUTH_TOKEN="$VK" \
-  CLAUDE_CODE_MAX_CONTEXT_TOKENS="${CLAUDE_CODE_MAX_CONTEXT_TOKENS:-1000000}" \
+  CLAUDE_CODE_MAX_CONTEXT_TOKENS="${CLAUDE_CODE_MAX_CONTEXT_TOKENS:-$DEFAULT_CTX}" \
   CLAUDE_CODE_MAX_OUTPUT_TOKENS="${CLAUDE_CODE_MAX_OUTPUT_TOKENS:-8000}" \
+  API_TIMEOUT_MS="${API_TIMEOUT_MS:-$DEFAULT_TIMEOUT_MS}" \
   claude --model "$MODEL" "$@"
