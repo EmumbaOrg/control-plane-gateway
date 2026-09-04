@@ -189,6 +189,20 @@ note "gateway  : $GATEWAY"
 # the environment wins, as before.
 case "$MODEL" in
   *local-*) DEFAULT_CTX=32000 ;;
+  # z.ai direct. These are NOT 1M-input models, and the generic default below
+  # would tell Claude Code it has several times the window it really has.
+  # config.yaml declares max_input_tokens for the desktop app's benefit, but
+  # the CLI reads this variable instead, so it needs its own case.
+  #
+  # ORDER MATTERS: the 4.5 pattern must come FIRST. `case` takes the first
+  # match, and both aliases contain `zai-`, so a single `*zai-*` arm would
+  # silently hand the 128k model the 200k figure. That was the state between
+  # adding zai-glm45-flash and this fix.
+  #   glm-4.5-flash  128k in /  32k out  -> 120000
+  #   glm-4.7-flash  200k in / 128k out  -> 190000
+  # Each leaves headroom under the real ceiling.
+  *zai-*45f|*zai-glm45-*) DEFAULT_CTX=120000 ;;
+  *zai-*)   DEFAULT_CTX=190000 ;;
   *)        DEFAULT_CTX=1000000 ;;
 esac
 # --- request timeout, per route class --------------------------------------

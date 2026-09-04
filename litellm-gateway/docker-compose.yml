@@ -33,6 +33,11 @@ services:
       # is unaffected by its absence.
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
       GROQ_API_KEY: ${GROQ_API_KEY:-}
+      # z.ai — first party. LiteLLM has a native `zai` provider pointing at
+      # https://api.z.ai/api/paas/v4, so the gateway talks to z.ai itself.
+      # The Flash models are free on z.ai's own price list (not expiring
+      # trial credit), so this needs an account but no card.
+      ZAI_API_KEY: ${ZAI_API_KEY:-}
       # Local models via Ollama on the host. No key — Ollama does not
       # authenticate. host.docker.internal, not localhost: localhost inside
       # this container is the container. Ollama must also be listening on

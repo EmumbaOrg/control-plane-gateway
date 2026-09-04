@@ -6,7 +6,9 @@ Code already talks to whatever `ANTHROPIC_BASE_URL` points at. The whole change
 is five entries in `config.yaml` and one environment variable.
 
 Provider used here: **OpenRouter**, because one key reaches OpenAI, Google,
-DeepSeek, Z.ai, xAI and others — the fewest credentials to manage for a PoC.
+DeepSeek, xAI and others — the fewest credentials to manage for a PoC. z.ai and
+a local Ollama model are reached first-party instead, each with its own
+configuration; see their sections below.
 
 ---
 
@@ -193,7 +195,8 @@ Run `/status` inside the session to confirm the base URL and auth token landed.
 
 Updated 27 Aug 2026. The two paid OpenAI routes (`gpt-5.2`, `gpt-5.3-codex`)
 were **removed** — this account has no OpenRouter balance, so they only ever
-returned 402. Nine zero-cost routes were added in their place.
+returned 402. Zero-cost routes were added in their place — the current set is
+the table below.
 
 **Paid** (need OpenRouter credit; prices per million tokens, input/output):
 
@@ -201,7 +204,6 @@ returned 402. Nine zero-cost routes were added in their place.
 | --- | --- | --- | --- |
 | `gemini-3.7-flash` | `google/gemini-3.7-flash` | 1.05M | $0.375 / $1.875 |
 | `deepseek-v4-pro` | `deepseek/deepseek-v4-pro` | 1.05M | $0.579 / $1.158 |
-| `glm-5.3` | `z-ai/glm-5.3` | 1.05M | $1.40 / $4.40 |
 
 **Zero-cost.** Selected from the live OpenRouter catalogue on 27 Aug 2026 by
 three filters: prompt *and* completion price exactly 0, `tools` in
@@ -214,7 +216,6 @@ the largest of those:
 | `minimax-m3-free` | `minimax/minimax-m3:free` | 1.05M | 943K |
 | `dots3-note-free` | `dots-studio/dots-3-note-preview:free` | 512K | 461K |
 | `nemotron-super-120b-free` | `nvidia/nemotron-3-super-120b-a12b:free` | 262K | 236K |
-| `glm-5.2-free` | `z-ai/glm-5.2:free` | 256K | 230K |
 | `minimax-m27-free` | `minimax/minimax-m2.7:free` | 197K | 177K |
 | `inkling-small-free` | `thinkingmachines/inkling-small:free` | 1.05M | 262K |
 | `nemotron-ultra-550b-free` | `nvidia/nemotron-3-ultra-550b-a55b:free` | 1M | 65K |
@@ -256,8 +257,8 @@ docs. None of these OpenRouter IDs are in LiteLLM's built-in cost map. The proxy
 says so on startup, once per model:
 
 ```
-LiteLLM:WARNING: register_model: model=openrouter/z-ai/glm-5.3 not in built-in
-cost map and no prefix/region variant matched
+LiteLLM:WARNING: register_model: model=openrouter/deepseek/deepseek-v4-pro not
+in built-in cost map and no prefix/region variant matched
 ```
 
 With no cost data, every call through that model is priced at **$0**. Spend logs
@@ -394,8 +395,8 @@ Two causes, neither a misconfiguration:
 2. **Auto-discovery filters by name.** Per Anthropic's third-party gateway
    docs, discovery "shows only models whose IDs are recognizably Claude." Our
    gateway advertises all ten on `GET /v1/models` — verified — and the app
-   drops `gpt-5.2`, `gemini-3.7-flash`, `deepseek-v4-pro`, `glm-5.3` and
-   `nemotron-free` before rendering the picker. LiteLLM's dashboard applies no
+   drops `gpt-5.2`, `gemini-3.7-flash`, `deepseek-v4-pro` and `nemotron-free`
+   before rendering the picker. LiteLLM's dashboard applies no
    such filter, hence the discrepancy.
 
 <a id="the-filter"></a>
@@ -509,12 +510,10 @@ read `claude-sonnet-4-5-mmx-m3-free`. `picker-shim/` fixes that.
 | --- | --- | --- |
 | `gemini-3.7-flash` | `claude-haiku-4-5-gmn-37-flash` | Gemini 3.7 Flash (gateway) |
 | `deepseek-v4-pro` | `claude-sonnet-4-5-dsk-v4-pro` | DeepSeek V4 Pro (gateway) |
-| `glm-5.3` | `claude-sonnet-4-5-zai-53` | GLM-5.3 (gateway) |
 | `nemotron-free` | `claude-haiku-4-5-nvda-free` | Nemotron 3.5 Lightning free (gateway) |
 | `groq-gpt-oss-120b` | `claude-sonnet-4-5-groq-oss-120b` | Groq gpt-oss-120b (gateway) |
 | `groq-gpt-oss-20b` | `claude-haiku-4-5-groq-oss-20b` | Groq gpt-oss-20b (gateway) |
 | `minimax-m3-free` | `claude-sonnet-4-5-mmx-m3-free` | MiniMax M3 free (gateway) |
-| `glm-5.2-free` | `claude-sonnet-4-5-zai-52-free` | GLM-5.2 free (gateway) |
 | `nemotron-super-120b-free` | `claude-sonnet-4-5-nvda-super-120b-free` | Nemotron 3 Super 120B free (gateway) |
 | `north-mini-code-free` | `claude-haiku-4-5-north-mini-code-free` | North Mini Code free (gateway) |
 | `dots3-note-free` | `claude-sonnet-4-5-dots3-note-free` | DOTS-3 Note free (gateway) |
@@ -641,8 +640,9 @@ Miss any step and the failure is silent or misleading:
 #### Verification performed
 
 - The app's real discovery request, replayed against `:4001` and run through a
-  reimplementation of `lo()`: 24 of 34 routes kept, all 15 picker aliases among
-  them, labels correct.
+  reimplementation of `lo()`: 24 of 34 routes kept, all picker aliases among
+  them, labels correct. *(Measured 27 Aug 2026; the route list has changed since
+  — re-run before quoting the figures.)*
 - `picker-shim` access log shows the app's own
   `GET /v1/models?limit=1000 200` and `POST /v1/messages 200`, so proxying and
   streaming through the shim work in practice, not only in theory.

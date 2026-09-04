@@ -22,7 +22,7 @@
 
 - **Component:** LiteLLM Proxy Server (`ghcr.io/berriai/litellm:main-latest`) + PostgreSQL, via Docker Compose.
 - **Services running:** `litellm` (port 4000), `postgres` (5432), `picker-shim` (nginx, port 4001).
-- **Path:** Claude Code → `localhost:4000/v1/messages` → key/model/budget checks → real provider key swapped in → Anthropic (or OpenRouter/Groq) → response streamed back → capture callback writes to disk + PostgreSQL.
+- **Path:** Claude Code → `localhost:4000/v1/messages` → key/model/budget checks → real provider key swapped in → Anthropic, OpenRouter, Groq, z.ai, or a local Ollama model → response streamed back → capture callback writes to disk + PostgreSQL.
 - **Client configuration is two environment variables** — `ANTHROPIC_BASE_URL` and `ANTHROPIC_AUTH_TOKEN`. Nothing is patched, reverse-engineered, or MITM'd.
 - **Custom code we wrote:** `custom_capture.py` (capture callback), `verify.py` (capture scorecard), `run_checks.py` (16-point fidelity harness), `stub/stub_upstream.py` (fake provider), `capture-tap/tap.py` (alternative byte-level tap), `claude-gw.sh` (launcher), `picker-shim/nginx.conf`.
 - **Deliberate configuration choice:** `drop_params: false` globally, so LiteLLM never silently discards request fields it does not recognise — the worst failure mode for a capture gateway.
@@ -106,7 +106,7 @@ The five capabilities the PoC was asked to explore. **All five are complete and 
 ### 3.4 LiteLLM translating to Anthropic format, so Claude Code can use non-Anthropic models — ✅ **Done, verified 27 Aug 2026**
 
 - **Why:** it tests whether the gateway is a genuine control point or just an Anthropic passthrough — and whether cheaper models can be offered under the same budgets, attribution and capture.
-- **How:** **no code was written.** LiteLLM already exposes an Anthropic-format `/v1/messages` endpoint that translates to any provider it supports, and Claude Code already talks to whatever `ANTHROPIC_BASE_URL` points at. The whole change was `model_list` entries in `config.yaml` plus one environment variable. Provider: **OpenRouter** (one key reaches Google, DeepSeek, Z.ai, MiniMax, NVIDIA and others), with Groq entries alongside.
+- **How:** **no code was written.** LiteLLM already exposes an Anthropic-format `/v1/messages` endpoint that translates to any provider it supports, and Claude Code already talks to whatever `ANTHROPIC_BASE_URL` points at. The whole change was `model_list` entries in `config.yaml` plus one environment variable. Provider: **OpenRouter** (one key reaches Google, DeepSeek, MiniMax, NVIDIA and others), with Groq entries alongside, plus first-party routes to z.ai (§3.6) and a local Ollama model.
 - **How it was proven:** a real `claude` CLI session ran against a free NVIDIA Nemotron route, was asked to read a file with its Read tool, and returned the file's contents. Claude Code → gateway → OpenRouter → NVIDIA → back, with a tool round-trip in the middle.
 - **Status / findings:**
   - **34 model routes registered** — 4 Anthropic, 15 honest provider aliases, 15 Claude-shaped picker aliases.
@@ -135,6 +135,120 @@ The five capabilities the PoC was asked to explore. **All five are complete and 
   - **The registered source does not point at this repository.** It points at `github.com/asif-emumba/testing-skills.git`, so `plugins/emumba-react/` here is the review copy, not what developers actually receive. Reconcile before offering this to anyone.
   - **Open item:** the plugin currently sits on branch `skills/emumba-react` and is registered against a throwaway local clone. Re-point it at the real repository URL once the branch is merged — the source schema has no branch field, so the plugin must sit on the default branch.
 
+### 3.6 z.ai as a first-party provider route — ✅ **Done, verified 4 Sep 2026**
+
+- **Why:** it tests whether a *new vendor* can be added to the control plane without engineering work, and whether the gateway's guarantees — capture, attribution, budgets, model ACL — hold on a provider nobody had integrated before. z.ai is reached through **LiteLLM's native `zai` provider**, with an Emumba-held z.ai key: one account, one hop, one party seeing the prompt.
+- **How:** **no code.** Two `model_list` entries in `config.yaml` and one environment variable (`ZAI_API_KEY`) in `docker-compose.yml`. The native provider resolves to `https://api.z.ai/api/paas/v4` with no custom `api_base` needed — verified in the running image: `get_llm_provider('zai/glm-4.7-flash')` → provider `zai`, base `https://api.z.ai/api/paas/v4`.
+
+#### The registered routes
+
+| Honest alias | Picker alias | Model | Input | Output | Role |
+|---|---|---|---|---|---|
+| `zai-glm47-flash` | `claude-sonnet-4-5-zai-47f` | `zai/glm-4.7-flash` | 200k | 128k | **Default** — the larger free tier |
+| `zai-glm45-flash` | `claude-sonnet-4-5-zai-45f` | `zai/glm-4.5-flash` | 128k | 32k | Second free route. **Not an automatic failover** — see the rate-limit finding below |
+
+Both support tool calling (non-negotiable — Claude Code cannot run without it) and both clear the 32,000 `max_tokens` the CLI asks for. **Free here means free**, not expiring trial credit: the Flash models are priced at nothing on z.ai's own list, so the account needs no card.
+
+**⚠ Only the free Flash tiers are reachable, because the z.ai account has no balance.** Probed against the live key, 4 Sep 2026:
+
+| Model | Result |
+|---|---|
+| `zai/glm-4.7-flash` | ✅ works |
+| `zai/glm-4.5-flash` | ✅ works |
+| `zai/glm-5.3` | ❌ `RateLimitError: Insufficient balance or no resource package. Please recharge.` |
+| `zai/glm-5.2` | ❌ same |
+
+**Adding a paid model is one `model_list` entry once the account is funded** — `zai/glm-5.3` is already in LiteLLM's cost map at in `0.0000014` / out `0.0000044` with a 1M input ceiling. It is deliberately **not** registered in advance: a route that answers every call with *"Insufficient balance"* reads as a broken gateway.
+
+#### How a request and response are routed
+
+```mermaid
+flowchart TD
+    A(["Developer prompt in Claude Code"]) --> B["POST localhost:4000/v1/messages<br/><b>Anthropic Messages format</b><br/>x-api-key: VIRTUAL key"]
+    B --> C{"Key valid · model allowed<br/>· within budget?"}
+    C -->|No| C1(["401 / 403 / 429<br/>no provider called, nothing billed"])
+    C -->|Yes| D["<b>Translate</b> Anthropic Messages → OpenAI Chat Completions<br/>(LiteLLM's internal pivot format)"]
+    D --> E["Swap VIRTUAL key → ZAI_API_KEY"]
+    E --> F["POST api.z.ai/api/paas/v4/chat/completions<br/><b>OpenAI format</b>"]
+    F --> G["z.ai GLM model<br/>glm-4.7-flash · glm-4.5-flash"]
+    G --> H["Response: <b>OpenAI Chat Completion</b><br/>(or OpenAI SSE chunks when streaming)"]
+    H --> I["<b>Translate back</b> OpenAI → Anthropic Messages<br/>reasoning → thinking block · tool_calls → tool_use"]
+    I --> J["Capture callback writes request + response<br/>spend attributed to the named key"]
+    J --> K(["Answer in the terminal"])
+
+    style A fill:#5b9bd5,stroke:#2e75b6,color:#fff
+    style K fill:#5b9bd5,stroke:#2e75b6,color:#fff
+    style C fill:#9dc3e6,stroke:#2e75b6,color:#1f3864
+    style C1 fill:#fdeaea,stroke:#c0392b,color:#7b241c
+    style D fill:#fff2cc,stroke:#bf8f00,color:#7f6000
+    style I fill:#fff2cc,stroke:#bf8f00,color:#7f6000
+    style G fill:#e8f5e9,stroke:#67a86b,color:#1b5e20
+```
+
+#### What format is on the wire, at each hop
+
+| Hop | Direction | Format | Notes |
+|---|---|---|---|
+| 1 | Claude Code → gateway | **Anthropic Messages** (`POST /v1/messages`) | Identical to every other route, Anthropic's own included. The client never learns which vendor served it. |
+| 2 | Inside LiteLLM | **Anthropic → OpenAI Chat Completions** | The single conversion, and where the virtual key is swapped for `ZAI_API_KEY`. The OpenAI form is a *pivot*, never on the wire to the client — and it is what the capture files record. |
+| 3 | Gateway → z.ai | **OpenAI Chat Completions** | `api.z.ai/api/paas/v4/chat/completions`. `ZAIChatConfig` subclasses `OpenAIGPTConfig`, so this is a stock OpenAI-shaped body. |
+| 4 | z.ai → gateway | **OpenAI completion / SSE** | Streaming and non-streaming both work; tool calls survive. |
+| 5 | Gateway → Claude Code | **OpenAI → Anthropic Messages / SSE** | Reasoning becomes a `thinking` block; `tool_calls` become `tool_use`; `finish_reason: stop` → `end_turn`, `length` → `max_tokens`. |
+
+**So translation happens exactly twice, in one place — inside LiteLLM — and none of it is z.ai-specific.** z.ai has no Anthropic-compatible endpoint; Anthropic support on this route is entirely the translation layer. That is why adding the provider needed no code, and why the same machinery would absorb the next one.
+
+#### Verified end to end
+
+Probed live through `/v1/messages` on 4 Sep 2026, `max_tokens: 512`, prompt *"Reply with exactly: OK"*:
+
+| Route | Result |
+|---|---|
+| `zai-glm47-flash` | ✅ `end_turn`, `thinking` block + text `OK` |
+| `zai-glm45-flash` | ✅ `end_turn`, `thinking` block + text `OK` |
+
+#### Status / findings
+
+- **GLM is a reasoning model, and that is the biggest gotcha on this route.** It emits a `thinking` block *before* any visible text, so a small output budget is spent entirely on reasoning and the caller sees `content: ""` with `stop_reason: max_tokens` — which reads as a broken model, not an empty budget.
+- **`thinking: {type: disabled}` is set on all four routes, and it reduces reasoning without removing it.** Measured with the flag on, same prompt:
+
+    | `max_tokens` | Runs producing text |
+    |---|---|
+    | 64 | **0 / 5** |
+    | 256 | **5 / 5** |
+    | 1024 | **5 / 5** |
+
+  **The effective control is the output budget, not the parameter** — roughly 256 tokens is the floor. Not a constraint in practice: the gateway clamps Claude Code's 32,000 ask to 8,000, far above it. **Do not smoke-test this route at `max_tokens: 64` and conclude it is broken.**
+- **`reasoning_effort` is not the knob for this provider.** It is accepted and silently does nothing — indistinguishable from a broken model. **Silent acceptance of an ineffective parameter** is the failure mode to watch for whenever a provider is added.
+- **Prompt caching works on this route, and gap #6 is overstated as written.** Measured 4 Sep with an identical **23,810-token** prefix sent three times:
+    - call 1 (cold): `input_tokens 23810`, `cache_read_input_tokens 2`
+    - calls 2 and 3: `input_tokens 2`, **`cache_read_input_tokens 23810`**
+
+  The full prefix was served from cache on every repeat, so **caching can survive the format translation.** Gap #6 — *"prompt caching is lost on non-Anthropic routes"* — holds for Ollama, which has no cache concept, but **must not be stated as a general rule.** Narrowed in section 5 accordingly. This matters commercially: Claude Code resends a large system prompt every turn, and gap #6 priced that as full-rate on every non-Anthropic route.
+- **Costs are nominal and deliberately non-zero.** The Flash tiers are genuinely free, but LiteLLM logs *"Skipping all budget checks for zero-cost model"* — a true `$0` route is exempt from `max_budget` entirely and logs `$0` spend. Pricing them at a token amount keeps attribution and enforcement working on the routes that would otherwise escape both. **These figures are invented; the spend is not money owed.**
+- **The free tier is roughly 1 request/second, and it bites in practice.** Reproduced 4 Sep while probing: `zai-glm47-flash` returned `Rate limit reached for requests` and `The service may be temporarily overloaded` on consecutive attempts, while `zai-glm45-flash` answered normally in the same window. The two routes are throttled independently, so the second is genuine spare capacity — **but nothing routes to it automatically.** Fine for a demo, **not enough for a room full of developers.**
+- **⚠ No fallback is configured between the two routes, and LiteLLM says so explicitly:** `Available Model Group Fallbacks=None`. A developer pinned to the 4.7 route gets a hard rate-limit error and must switch models by hand — registering two routes does **not** on its own make the free tier resilient. **Adding `fallbacks` in `config.yaml` is the outstanding fix**, and a prerequisite before this route is offered to more than one person at a time.
+- **Alias naming is load-bearing on the desktop app.** `glm` is on the picker's DENY list, so any alias spelling it vetoes itself and never appears — hence `zai-47f` and `zai-45f`. Renaming these breaks the picker **silently**, with no error anywhere.
+- **`claude-gw.sh` context globs are per model, and the ordering is load-bearing.** A single `*zai-*` arm set `DEFAULT_CTX=190000`, which would hand the **128k** model the **200k** figure — `case` takes the first match, so the narrower pattern comes first: `*zai-*45f|*zai-glm45-*` → `120000`, `*zai-*` → `190000`. Verified against all four aliases. **A glob that is correct for one model becomes wrong the moment a second one matches it.**
+- **Capture, attribution and budgets behave identically** to every other route. Nothing in the control plane is provider-specific, which is the point.
+
+#### Reproducing
+
+```bash
+# either z.ai route — same client format as every other model on the gateway
+curl -s http://localhost:4000/v1/messages \
+  -H "x-api-key: $VKEY" -H "anthropic-version: 2023-06-01" \
+  -H "content-type: application/json" \
+  -d '{"model":"zai-glm47-flash","max_tokens":512,
+       "messages":[{"role":"user","content":"Reply with exactly: OK"}]}'
+
+# which provider and upstream URL LiteLLM actually resolves
+docker exec litellm-gateway-litellm-1 python -c \
+  "import litellm; p = litellm.get_llm_provider('zai/glm-4.7-flash'); print(p[1], p[3])"
+#   zai https://api.z.ai/api/paas/v4
+```
+
+- **Reference:** `NON-ANTHROPIC-MODELS.md` for the full route table; `config.yaml` for the per-entry rationale.
+
 ### Summary
 
 | # | Action item | Status | Effort to complete |
@@ -144,6 +258,7 @@ The five capabilities the PoC was asked to explore. **All five are complete and 
 | 3 | MITM prompt modification | ✅ Done, verified | Decide whether redaction is switched on, and who owns the pattern list |
 | 4 | Non-Anthropic model translation | ✅ Done, verified end to end | — (unsupported by Anthropic; treat as PoC extra) |
 | 5 | Skill files into Claude Code | ✅ Done, verified | Re-point source at the real repo after merge |
+| 6 | z.ai as a first-party provider route | ✅ Done, verified | **Configure `fallbacks` between the two free routes** (the free tier rate-limits in practice); fund the account to unlock paid tiers |
 
 ---
 
@@ -193,7 +308,7 @@ The five capabilities the PoC was asked to explore. **All five are complete and 
 | 3 | **`max_budget` is retrospective, not pre-authorising** | The request that breaches the ceiling still completes. Measured overshoot: **29× on a tiny cap**. Concurrent requests can each pass the check before any writes its spend | By design in LiteLLM. Must always be described as "stops the *next* request", never a hard cap |
 | 4 | **Models with no price data cost $0** | Spend never accrues and budgets never trip — **fails open, and fails quietly**. Applies to all zero-cost free routes | Mitigated for paid routes by hand-pinned `model_info` prices. Must be re-checked whenever a model is added |
 | 5 | **Over-budget looks like an outage** | LiteLLM returns `429` from the auth layer, killing every route including `/v1/models`. Claude Code cannot distinguish it from a rate limit and burns 10 retries. **A developer will report this as "the gateway is down"** | Documented; needs a support runbook before rollout |
-| 6 | **Prompt caching is lost on non-Anthropic routes** | `cache_read_input_tokens` returns 0. With Claude Code's ~27k-token system prompt resent every turn, this is a substantial cost increase | Accepted limitation of format translation |
+| 6 | **Prompt caching is lost on _some_ non-Anthropic routes** | `cache_read_input_tokens` returns 0 where the provider has no cache concept (Ollama), and with a ~27k-token system prompt resent every turn that is a substantial cost increase. **Does not generalise:** the direct z.ai route served a full **23,810-token** prefix from cache on repeat (§3.6) | **Narrowed 4 Sep 2026, not closed.** Holds for Ollama; disproved for direct z.ai. Needs a per-provider measurement before being repeated for any other route |
 | 7 | **`drop_params: true` on non-Anthropic routes** | Some Claude Code features degrade **silently** rather than erroring on those models. Anthropic traffic is untouched | Deliberate trade-off — those routes return a hard 400 otherwise |
 | 8 | **Anthropic does not support routing Claude Code to non-Claude models** through any gateway | Every breaking Claude Code release is ours to absorb | Record as an ongoing risk, not a solved problem |
 | 9 | **Desktop app still sends background traffic to Anthropic** | Selecting a free model does not make a session free, and does not keep prompts off Anthropic | Measured from spend logs. A knob exists to capture that slot; left off deliberately |

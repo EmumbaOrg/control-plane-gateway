@@ -84,7 +84,7 @@ report("Anthropic models exempt from the clamp", exempt_ok,
 # `claude-haiku-4-5`. Prefix matching here would silently exempt every
 # translated route and defeat the clamp on exactly the models that need it.
 traps = ("claude-haiku-4-5-gmn-37-flash", "claude-sonnet-4-5-dsk-v4-pro",
-         "claude-sonnet-4-5-zai-53", "claude-haiku-4-5-nvda-free")
+         "claude-sonnet-4-5-zai-47f", "claude-haiku-4-5-nvda-free")
 trap_ok = all(modify(body(m, 32000))["max_tokens"] == 8000 for m in traps)
 report("Picker aliases still clamped (exact match, not prefix)", trap_ok,
        f"{len(traps)} Claude-shaped aliases for other vendors")

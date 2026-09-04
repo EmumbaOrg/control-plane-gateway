@@ -96,16 +96,6 @@ model_list:
       output_cost_per_token: 0.000001158144
       cache_read_input_token_cost: 0.000000048256
 
-  - model_name: glm-5.3
-    litellm_params:
-      model: openrouter/z-ai/glm-5.3
-      api_key: os.environ/OPENROUTER_API_KEY
-      drop_params: true
-    model_info:
-      input_cost_per_token: 0.0000014
-      output_cost_per_token: 0.0000044
-      cache_read_input_token_cost: 0.00000026
-
   # Zero-cost route, for proving the plumbing on a free-tier OpenRouter
   # account. This exists because of a real failure: OpenRouter refuses a
   # free-tier request whose `max_tokens` exceeds the remaining credit, and
@@ -156,16 +146,6 @@ model_list:
   - model_name: minimax-m3-free
     litellm_params:
       model: openrouter/minimax/minimax-m3:free
-      api_key: os.environ/OPENROUTER_API_KEY
-      drop_params: true
-    model_info:
-      input_cost_per_token: 0.0
-      output_cost_per_token: 0.0
-
-  # Free sibling of the paid glm-5.3 above; 256k context, 230k output.
-  - model_name: glm-5.2-free
-    litellm_params:
-      model: openrouter/z-ai/glm-5.2:free
       api_key: os.environ/OPENROUTER_API_KEY
       drop_params: true
     model_info:
@@ -271,6 +251,132 @@ model_list:
       model: groq/openai/gpt-oss-20b
       api_key: os.environ/GROQ_API_KEY
       drop_params: true
+
+  # ---------------------------------------------------------------------------
+  # z.ai — FIRST PARTY. These entries talk to z.ai's own API with an Emumba
+  # z.ai key: one account, one hop, one party seeing the prompt. z.ai is
+  # reached this way and only this way; do not add an indirect route for it.
+  #
+  # ⚠ WHAT THIS COSTS TODAY: the z.ai account has NO BALANCE, so only the
+  # free Flash tiers are reachable. Measured 4 Sep 2026 against the live key:
+  #     zai/glm-4.5-flash   OK
+  #     zai/glm-4.7-flash   OK
+  #     zai/glm-5.3         RateLimitError "Insufficient balance or no
+  #     zai/glm-5.2          resource package. Please recharge."
+  # TO ADD A PAID MODEL, top up the z.ai account and register an entry with
+  # `model: zai/glm-5.3`; it is already in LiteLLM's cost map at in 0.0000014
+  # / out 0.0000044 with a 1M input ceiling. Do NOT register it before
+  # funding: a route that answers every call with a 429 reads as a broken
+  # gateway.
+  #
+  # PROVIDER. LiteLLM ships a native `zai` provider resolving to
+  # https://api.z.ai/api/paas/v4 — no custom api_base needed. Verified in this
+  # image: get_llm_provider('zai/glm-4.7-flash') -> ('glm-4.7-flash', 'zai',
+  # None, 'https://api.z.ai/api/paas/v4').
+  #
+  # WHY THE FLASH TAG. Confirmed against this image's cost map on 3 Sep 2026:
+  #     zai/glm-4.7-flash   cost 0/0     200k in / 128k out   tools True
+  #     zai/glm-4.5-flash   cost 0/0     128k in /  32k out   tools True
+  #     zai/glm-5.3-flash   cost NON-zero                     tools True
+  # Only the first two are free, and `glm-4.7-flash` is the larger. BOTH are
+  # registered below — 4.7-flash as the default and 4.5-flash as a second
+  # free route, since these two are the only z.ai capacity this account has. Note `glm-5.3-flash` is NOT free despite
+  # the Flash name — check the cost map before swapping the tag.
+  #
+  # Tool calling is non-negotiable (Claude Code cannot run without it) and the
+  # 128k output ceiling clears the 32000 max_tokens the CLI asks for, so
+  # neither of the two constraints that eliminated other candidates applies.
+  #
+  # FREE MEANS FREE, NOT TRIAL CREDIT — the Flash models are a line item
+  # priced at nothing on z.ai's own list, so no card is required. The
+  # documented free-tier rate limit is roughly 1 request/second, which is
+  # fine for a demo and NOT enough for a room full of developers.
+  #
+  # COSTS ARE NOMINAL AND DELIBERATELY NON-ZERO, exactly as on the Ollama
+  # routes below and for the same reason: LiteLLM logs "Skipping all budget
+  # checks for zero-cost model", so a genuinely $0 route is exempt from
+  # `max_budget` entirely and logs $0 spend. Pricing it at nothing would make
+  # this the one route that escapes the enforcement this PoC exists to
+  # demonstrate. These figures are invented; do not read them as money owed.
+  #
+  # REASONING-DISABLE: MEASURED, AND THE FLAG IS NOT THE FIX. GLM is a
+  # reasoning model and spends its output budget on a thinking block before
+  # any visible text — the same class of bug as qwen3's, but it does NOT have
+  # the same cure. Measured with thinking:disabled ON, 5 runs per budget:
+  #     max_tokens   64   0/5 produced any text (all 64 spent on thinking)
+  #     max_tokens  256   5/5 produced text
+  #     max_tokens 1024   5/5 produced text
+  # So `thinking: disabled` REDUCES reasoning without removing it: the route
+  # carrying the flag still failed every run at a tiny budget. THE EFFECTIVE
+  # CONTROL IS THE OUTPUT BUDGET, NOT THE FLAG — roughly 256 tokens is the
+  # floor. The flag is kept because it lowers the floor, not because it
+  # eliminates the failure. Do not smoke-test this route at max_tokens 64 and
+  # conclude it is broken.
+  - model_name: zai-glm47-flash
+    litellm_params:
+      model: zai/glm-4.7-flash
+      api_key: os.environ/ZAI_API_KEY
+      drop_params: true
+      # LOAD-BEARING, same class of bug as `think: false` on the qwen3 route.
+      # GLM-4.7-Flash is a reasoning model and will spend its whole output
+      # budget on a `thinking` block before emitting any visible text.
+      #
+      # WHICH KNOB WORKS. Measured 3 Sep 2026 through /v1/messages,
+      # max_tokens 64, prompt "Reply with exactly: OK":
+      #   no thinking param        64 output tokens, text "", max_tokens
+      #   reasoning_effort=none    64 output tokens, text "", max_tokens  <- INEFFECTIVE
+      #   thinking type=disabled   text "OK", end_turn
+      # `reasoning_effort` is NOT the knob for this provider. It is accepted
+      # and silently does nothing, which is indistinguishable from a broken
+      # model. Only the `thinking` shape below has any effect.
+      #
+      # ⚠ THIS REDUCES REASONING, IT DOES NOT ELIMINATE IT — unlike qwen3's
+      # `think: false`, which removes the block outright. A `thinking` block
+      # still comes back, so a MINIMUM OUTPUT BUDGET IS REQUIRED. Trial of 5
+      # runs per budget, both aliases, same prompt:
+      #   max_tokens   64:  0/5 produced any text  (all 64 tokens consumed)
+      #   max_tokens  256:  5/5 produced text      (28-191 output tokens)
+      #   max_tokens 1024:  5/5 produced text      (42-179 output tokens)
+      # So ~256 is the floor for reliability. This is NOT a constraint in
+      # practice: the gateway clamps Claude Code's 32000 ask to 8000, far
+      # above the floor. It only bites on deliberately tiny probes — do not
+      # smoke-test this route at max_tokens 64 and conclude it is broken.
+      thinking:
+        type: disabled
+    model_info:
+      input_cost_per_token: 0.0000001
+      output_cost_per_token: 0.0000001
+      max_input_tokens: 200000
+      max_output_tokens: 128000
+
+  # Second free route. This account's only z.ai capacity is the free Flash
+  # tier, and the documented limit is ~1 request/second — verified to bite in
+  # practice: 4.7-flash returned "Rate limit reached for requests" while this
+  # route answered normally in the same window.
+  #
+  # ⚠ THIS IS SPARE CAPACITY, NOT AUTOMATIC FAILOVER. No `fallbacks` are
+  # configured, and LiteLLM says so in the error: "Available Model Group
+  # Fallbacks=None". A caller pinned to one route gets a hard rate-limit
+  # error and must switch by hand. Add `fallbacks` before more than one
+  # person uses these routes at a time.
+  #
+  # SMALLER THAN 4.7-FLASH, DELIBERATELY SECOND CHOICE: 128k in / 32k out
+  # against 200k / 128k. The 32k output ceiling still clears Claude Code's
+  # 32000 ask, but only exactly — the gateway's clamp to 8000 is what keeps
+  # this comfortable. Verified reachable on the live key 4 Sep 2026.
+  # `thinking: disabled` for the same reason as the 4.7 entry above.
+  - model_name: zai-glm45-flash
+    litellm_params:
+      model: zai/glm-4.5-flash
+      api_key: os.environ/ZAI_API_KEY
+      drop_params: true
+      thinking:
+        type: disabled
+    model_info:
+      input_cost_per_token: 0.0000001
+      output_cost_per_token: 0.0000001
+      max_input_tokens: 128000
+      max_output_tokens: 32000
 
   # ---------------------------------------------------------------------------
   # Local models, via Ollama on the developer's own machine. No API key, no
@@ -380,7 +486,7 @@ model_list:
   # `claude-<tier>-via-<real model>` scheme named its vendor in every entry
   # and so vetoed all eight of its own aliases. These names carry the tier
   # and a VENDOR-FREE abbreviation instead: oai-52, gmn-37-flash, dsk-v4-pro,
-  # zai-53, nvda-free, groq-oss-120b. Each was checked against DENY
+  # zai-47f, nvda-free, groq-oss-120b. Each was checked against DENY
   # individually — note `dsk` avoids both `\bds-` and `dpsk`, and `oai`
   # avoids `openai`.
   #
@@ -424,16 +530,6 @@ model_list:
       input_cost_per_token: 0.000000579072
       output_cost_per_token: 0.000001158144
       cache_read_input_token_cost: 0.000000048256
-
-  - model_name: claude-sonnet-4-5-zai-53
-    litellm_params:
-      model: openrouter/z-ai/glm-5.3
-      api_key: os.environ/OPENROUTER_API_KEY
-      drop_params: true
-    model_info:
-      input_cost_per_token: 0.0000014
-      output_cost_per_token: 0.0000044
-      cache_read_input_token_cost: 0.00000026
 
   - model_name: claude-haiku-4-5-nvda-free
     litellm_params:
@@ -498,18 +594,43 @@ model_list:
       max_input_tokens: 32768
       max_output_tokens: 8192
 
+  # z.ai picker aliases. `glm` is on the app's DENY list, so the model id must
+  # not spell it; `zai-47f` and `zai-45f` carry the vendor-free abbreviation.
+  # Do not rename either to anything containing `glm` or it silently never
+  # reaches the picker. Each needs a matching sub_filter line in
+  # picker-shim/nginx.conf to get a readable label.
+  - model_name: claude-sonnet-4-5-zai-47f
+    litellm_params:
+      model: zai/glm-4.7-flash
+      api_key: os.environ/ZAI_API_KEY
+      drop_params: true
+      # See the honest `zai-glm47-flash` entry above for the measurements.
+      # This alias needs it MORE, not less: it exists for the desktop app,
+      # which has no way to send a thinking parameter of its own.
+      thinking:
+        type: disabled
+    model_info:
+      input_cost_per_token: 0.0000001
+      output_cost_per_token: 0.0000001
+      max_input_tokens: 200000
+      max_output_tokens: 128000
+
+  - model_name: claude-sonnet-4-5-zai-45f
+    litellm_params:
+      model: zai/glm-4.5-flash
+      api_key: os.environ/ZAI_API_KEY
+      drop_params: true
+      thinking:
+        type: disabled
+    model_info:
+      input_cost_per_token: 0.0000001
+      output_cost_per_token: 0.0000001
+      max_input_tokens: 128000
+      max_output_tokens: 32000
+
   - model_name: claude-sonnet-4-5-mmx-m3-free
     litellm_params:
       model: openrouter/minimax/minimax-m3:free
-      api_key: os.environ/OPENROUTER_API_KEY
-      drop_params: true
-    model_info:
-      input_cost_per_token: 0.0
-      output_cost_per_token: 0.0
-
-  - model_name: claude-sonnet-4-5-zai-52-free
-    litellm_params:
-      model: openrouter/z-ai/glm-5.2:free
       api_key: os.environ/OPENROUTER_API_KEY
       drop_params: true
     model_info:
