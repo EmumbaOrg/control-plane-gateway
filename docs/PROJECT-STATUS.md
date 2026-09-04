@@ -24,7 +24,7 @@
 - **Services running:** `litellm` (port 4000), `postgres` (5432), `picker-shim` (nginx, port 4001).
 - **Path:** Claude Code → `localhost:4000/v1/messages` → key/model/budget checks → real provider key swapped in → Anthropic, OpenRouter, Groq, z.ai, or a local Ollama model → response streamed back → capture callback writes to disk + PostgreSQL.
 - **Client configuration is two environment variables** — `ANTHROPIC_BASE_URL` and `ANTHROPIC_AUTH_TOKEN`. Nothing is patched, reverse-engineered, or MITM'd.
-- **Custom code we wrote:** `custom_capture.py` (capture callback), `verify.py` (capture scorecard), `run_checks.py` (16-point fidelity harness), `stub/stub_upstream.py` (fake provider), `capture-tap/tap.py` (alternative byte-level tap), `claude-gw.sh` (launcher), `picker-shim/nginx.conf`.
+- **Custom code we wrote:** `custom_capture.py` (capture callback), `verify.py` (capture scorecard), `verify_modify.py` (modification scorecard), `verify_routing.py` (route-override and model-attribution scorecard), `run_checks.py` (16-point fidelity harness), `stub/stub_upstream.py` (fake provider), `capture-tap/tap.py` (alternative byte-level tap), `claude-gw.sh` (launcher), `picker-shim/nginx.conf`.
 - **Deliberate configuration choice:** `drop_params: false` globally, so LiteLLM never silently discards request fields it does not recognise — the worst failure mode for a capture gateway.
 
 ### Credential model (the core security idea)
@@ -339,6 +339,7 @@ docker exec litellm-gateway-litellm-1 python -c \
 | Gateway stack | `litellm-gateway/docker-compose.yml`, `config.yaml` | Running; 34 model routes |
 | Capture | `custom_capture.py` | Working; writes plain JSON + `index.jsonl` |
 | Verification | `run_checks.py` (16 checks), `verify.py`, `stub/stub_upstream.py` | 15/16 pass, zero-cost |
+| Route override + attribution | `custom_capture.py`, `verify_routing.py` (23 checks) | Working; verified live 4 Sep 2026 — selected Haiku, served by `ollama_chat/qwen3:8b`, logged as `ollama_chat/qwen3:8b` in both the capture and the LiteLLM dashboard's spend logs. See [`GATEWAY-MODIFY.md`](GATEWAY-MODIFY.md) behaviour 0 |
 | Byte-faithful alternative | `capture-tap/tap.py`, `export_captures.py` | Demonstrated on real traffic |
 | Desktop model picker | `picker-shim/nginx.conf` | Working on port 4001 |
 | Developer launcher | `claude-gw.sh` | Validates the key before launching, so failures are legible |

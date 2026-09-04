@@ -26,9 +26,15 @@ else here — it shows exactly which fields LiteLLM exposes to a callback.
 REQUEST MODIFICATION (action item 03)
 ------------------------------------
 Besides recording, this callback also *modifies* requests on the way past, via
-`async_pre_call_hook`. Three behaviours, each individually switchable and all
+`async_pre_call_hook`. Four behaviours, each individually switchable and all
 fail-open:
 
+  0. Route override      — the model is rewritten when the conversation matches
+     a routing rule, so client work scoped to on-prem inference reaches the
+     private local model whatever the developer picked. This one changes WHICH
+     MODEL ANSWERS, so it also changes what has to be recorded: see
+     `_actual_model` and `_routing_of` — the captured `model` is resolved from
+     the response, never from the request.
   1. `max_tokens` clamp   — a server-side output ceiling, so every client is
      capped at once. The desktop app has no `CLAUDE_CODE_MAX_OUTPUT_TOKENS`
      equivalent, so this is the only place it can be done for it.
@@ -75,6 +81,112 @@ KWARGS_DUMPS = int(os.environ.get("CAPTURE_KWARGS_DUMPS", "5"))
 # ---------------------------------------------------------------------------
 # Request modification (action item 03)
 # ---------------------------------------------------------------------------
+
+# --- content-based route override (step 0) ---------------------------------
+# WHY THIS EXISTS. Some client material must not leave the building. Asking every
+# developer to remember to switch the picker to the local model whenever they
+# touch that client's work is a control that fails the first time someone is in a
+# hurry. So the decision moves here: the developer keeps whatever model they
+# picked, and when the conversation is about a client scoped to on-prem
+# inference, the gateway sends the request to the private local model instead.
+#
+# THIS RUNS FIRST, before the clamp and the tool slimming, and the order is
+# load-bearing: both of those key off `data["model"]`, so they must see the model
+# that will actually serve the request. Slimming in particular is what makes an
+# overridden request fit a 32,768-token model at all.
+#
+# ⚠ THE HONEST COSTS, all three:
+#
+#   1. CAPABILITY. qwen3:8b is not Haiku. The developer asked for one model and
+#      got another, so the swap has to be VISIBLE rather than quietly absorbed —
+#      which is why the captured `model` is resolved from what answered (see
+#      `_actual_model`) and every override lands in modifications.jsonl.
+#   2. CONTEXT. The client believes it is talking to a 200k-window model and
+#      builds prompts to match; the local route holds 32,768 and Ollama
+#      TRUNCATES PAST IT IN SILENCE (see SLIM_TOOLS_MATCH below). Slimming buys
+#      ~14.5k tokens back, which is enough for ordinary turns and not enough for
+#      a long session. There is no fix for this inside the gateway — the client's
+#      context ceiling is set per selected model, and the client selected Haiku.
+#   3. NO MEMORY. This is a per-request decision read out of the request text.
+#      The only state is the history Claude Code resends every turn, so if the
+#      trigger phrase falls outside ROUTE_SCAN_CHARS on a later turn, the route
+#      flips back to the hosted model mid-conversation. That is why the budget
+#      defaults an order of magnitude above the injector's 400k rather than
+#      sharing it.
+#
+# Rules are ordered and the FIRST match wins; a rule whose target model is
+# already the one requested is skipped, so re-entry is a no-op.
+_DEFAULT_ROUTE_RULES = [
+    {
+        "name": "extreme-networks-on-prem",
+        "model": "local-qwen3-8b",
+        # The COMPANY NAME only, deliberately. "extreme network" without the `s`
+        # also matches "extreme network latency", and the cost of a false
+        # positive here is not cosmetic: it silently downgrades an unrelated
+        # request to an 8B model. Keep additions to this list unambiguous.
+        # `extremenetworks` is listed separately rather than making the
+        # separator optional in the regex: spelling the accepted forms out is
+        # auditable, and a cleverer pattern is how a rule starts matching
+        # things nobody signed off on.
+        "keywords": ["extreme networks", "extremenetworks"],
+    },
+]
+
+# JSON override for the rules above, so the policy is deployment configuration
+# rather than a code change. "off" disables content-based routing entirely.
+_ROUTE_RULES_RAW = os.environ.get("GATEWAY_ROUTE_RULES", "").strip()
+
+# How much conversation text to scan for a trigger. See cost 3 above for why
+# this is large: a mid-conversation route flip is worse than the scan cost.
+ROUTE_SCAN_CHARS = int(os.environ.get("GATEWAY_ROUTE_SCAN_CHARS", "2000000"))
+
+
+def _compile_route_rules(raw: str):
+    r"""Parse and compile the rules once, at import.
+
+    Whitespace between the words of a keyword is matched flexibly (`\s+`) so a
+    phrase broken across a line still triggers, and each phrase is anchored on
+    word boundaries so `extremenetworks-migration` does not.
+    """
+    if raw.lower() in ("off", "0", "false", "no", "none"):
+        return []
+    rules = _DEFAULT_ROUTE_RULES
+    if raw:
+        try:
+            parsed = json.loads(raw)
+            if not isinstance(parsed, list):
+                raise ValueError("GATEWAY_ROUTE_RULES must be a JSON list")
+            rules = parsed
+        except Exception as e:
+            # Fail to the default rather than to nothing: an unparseable env var
+            # is an operator typo, and dropping the policy silently is the worse
+            # of the two failures.
+            print(f"[route] bad GATEWAY_ROUTE_RULES, using defaults: "
+                  f"{type(e).__name__}: {e}")
+
+    compiled = []
+    for rule in rules:
+        try:
+            target = str(rule["model"]).strip()
+            patterns = [
+                (kw, re.compile(
+                    r"\b" + r"\s+".join(re.escape(w) for w in str(kw).split()) + r"\b",
+                    re.IGNORECASE))
+                for kw in rule.get("keywords") or [] if str(kw).strip()
+            ]
+            if target and patterns:
+                compiled.append({
+                    "name": str(rule.get("name") or target),
+                    "model": target,
+                    "patterns": patterns,
+                })
+        except Exception as e:
+            print(f"[route] skipping malformed rule {rule!r}: "
+                  f"{type(e).__name__}: {e}")
+    return compiled
+
+
+ROUTE_RULES = _compile_route_rules(_ROUTE_RULES_RAW)
 
 # Server-side output ceiling. Claude Code reserves 32000 output tokens on every
 # request and providers gate on the *reservation*, not on what is produced — so
@@ -409,6 +521,86 @@ def _usage_of(response_obj) -> dict:
     return {k: usage.get(k) for k in keys if isinstance(usage, dict)}
 
 
+def _model_group(kwargs: dict) -> str | None:
+    """The deployment alias LiteLLM routed to — `local-qwen3-8b`, not
+    `ollama_chat/qwen3:8b`. This is the value `data["model"]` was rewritten to
+    by `_route_override`, which makes it the field that tells us WHETHER an
+    override happened, by comparing it against what the client asked for.
+
+    VERIFIED 4 Sep 2026 on litellm 1.98.0 from capture/_kwargs: for a request
+    the client sent as `local-qwen3-8b`, `standard_logging_object` carried
+    model_group=`local-qwen3-8b` and model=`ollama_chat/qwen3:8b`.
+    """
+    slo = kwargs.get("standard_logging_object")
+    if isinstance(slo, dict) and isinstance(slo.get("model_group"), str):
+        return slo["model_group"] or None
+    md = (kwargs.get("litellm_params") or {}).get("metadata")
+    if isinstance(md, dict) and isinstance(md.get("model_group"), str):
+        return md["model_group"] or None
+    return None
+
+
+def _actual_model(kwargs, response_obj, group=None) -> str | None:
+    """The model that ACTUALLY produced this response.
+
+    THE WHOLE POINT OF THIS FUNCTION: once the gateway can rewrite the route
+    (see `_route_override`), the model in the client's request is a *request*,
+    not a record. Logging it would mean every override is invisible in the
+    capture, in usage tracking and in cost attribution — the metadata would say
+    Haiku answered when qwen3:8b did.
+
+    So the chain below reads the response first and NEVER falls back to the
+    client-requested model. If every source is empty we return None and the
+    reader sees a gap, which is honest; a plausible-looking wrong model name is
+    not. `model_group` is the last resort because it is at least the route that
+    was chosen, even on a failed exchange where nothing came back.
+    """
+    data = _jsonable(response_obj)
+    if isinstance(data, dict):
+        for key in ("model", "model_name"):
+            value = data.get(key)
+            if isinstance(value, str) and value.strip():
+                return value
+    slo = kwargs.get("standard_logging_object")
+    candidates = [
+        slo.get("model") if isinstance(slo, dict) else None,
+        kwargs.get("model"),
+        (kwargs.get("litellm_params") or {}).get("model"),
+        group,
+    ]
+    for value in candidates:
+        if isinstance(value, str) and value.strip():
+            return value
+    return None
+
+
+def _routing_of(kwargs: dict, body, response_obj) -> dict:
+    """Reconcile what the client asked for against what served the request.
+
+    `body` is the ORIGINAL client body — `proxy_server_request` is recorded by
+    the proxy at ingress, before the pre-call hook runs, so it still carries the
+    picker's model even when we rewrote the route. Verified from the captures in
+    this repo, where the stored body shows max_tokens 32000 and 36 tools while
+    the forwarded request had been clamped and slimmed.
+
+    That is what makes this reconciliation possible without any state shared
+    between the two hooks.
+    """
+    client_model = body.get("model") if isinstance(body, dict) else None
+    client_model = client_model if isinstance(client_model, str) else None
+    group = _model_group(kwargs)
+    actual = _actual_model(kwargs, response_obj, group)
+    return {
+        # What the developer picked.
+        "client_model": client_model,
+        # The route that served it, and the model behind that route.
+        "model_group": group,
+        "model": actual,
+        # True only when we can see both sides and they disagree.
+        "overridden": bool(client_model and group and group != client_model),
+    }
+
+
 def _incoming(kwargs: dict) -> dict:
     """Locate the original client request inside the callback payload.
 
@@ -462,6 +654,11 @@ def _capture(kwargs, response_obj, ok: bool) -> None:
         session = headers.get("x-claude-code-session-id") or "no-session-id"
         stamp = str(time.time_ns())
 
+        # Who actually answered. Resolved from the response, never from the
+        # request — see `_actual_model` for why that distinction is the whole
+        # point once the gateway can rewrite a route.
+        routing = _routing_of(kwargs, body, response_obj)
+
         d = STORE / session
         d.mkdir(parents=True, exist_ok=True)
         seq = _next_seq(d)
@@ -470,6 +667,11 @@ def _capture(kwargs, response_obj, ok: bool) -> None:
         _write_json(d / f"{name}.request.json", {
             "body": body,
             "headers": headers,
+            # `body` above is the client's original request, so on an overridden
+            # exchange its `model` is NOT the model that served it. This block
+            # is where the reconciliation lives; read it before believing
+            # `body["model"]`.
+            "routing": routing,
             "incoming_source": incoming.get("_source", "proxy_server_request"),
             # LiteLLM's own normalised view, for comparison against `body`.
             # If `body` is missing but this is present, LiteLLM is only giving
@@ -480,6 +682,7 @@ def _capture(kwargs, response_obj, ok: bool) -> None:
 
         _write_json(d / f"{name}.response.json", {
             "ok": ok,
+            "model": routing["model"],
             "response": _jsonable(response_obj),
         })
 
@@ -494,7 +697,15 @@ def _capture(kwargs, response_obj, ok: bool) -> None:
                 "session": session,
                 "agent": headers.get("x-claude-code-agent-id"),
                 "parent_agent": headers.get("x-claude-code-parent-agent-id"),
-                "model": kwargs.get("model"),
+                # THE MODEL THAT ANSWERED, not the one that was asked for.
+                # Everything downstream — usage tracking, cost attribution,
+                # analytics — reads this field, so an override that left it
+                # saying `claude-haiku-4-5` would misreport every routed
+                # request. `client_model` keeps the developer's selection.
+                "model": routing["model"],
+                "client_model": routing["client_model"],
+                "model_group": routing["model_group"],
+                "model_overridden": routing["overridden"],
                 "route": (incoming.get("url") if isinstance(incoming, dict) else None),
                 "stream": bool((kwargs.get("optional_params") or {}).get("stream"))
                           if isinstance(kwargs.get("optional_params"), dict) else None,
@@ -741,6 +952,112 @@ def _log_modification(record: dict) -> None:
         print(f"[modify] audit write failed, continuing: {type(e).__name__}: {e}")
 
 
+def _system_text(system) -> str:
+    """Flatten `system`, which arrives as a string on one route and a list of
+    text blocks on the other. Scanned as well as the messages because a repo's
+    CLAUDE.md — the most likely place for "this project is for <client>" to be
+    written down once — is delivered there, not in the conversation."""
+    if isinstance(system, str):
+        return system
+    if isinstance(system, list):
+        return "\n".join(
+            block["text"] for block in system
+            if isinstance(block, dict) and isinstance(block.get("text"), str))
+    return ""
+
+
+def _annotate_spend_log(data: dict, override: dict) -> None:
+    """Put the override on the row the LiteLLM dashboard shows.
+
+    THE PROBLEM THIS SOLVES. The dashboard's Logs page already names the model
+    that ANSWERED — `model` and `model_group` in `LiteLLM_SpendLogs` come from
+    the router, and the router ran after we rewrote `data["model"]`, so a routed
+    request is logged and priced as `ollama_chat/qwen3:8b` with no help from us.
+    What the row cannot show is that the developer asked for something else:
+    a forced route and a deliberate local selection look identical there.
+
+    Two supported fields carry that, both read from the request's metadata dict
+    (litellm 1.98.0, `proxy/spend_tracking/spend_tracking_utils.py`):
+
+      spend_logs_metadata  copied verbatim into SpendLogs.metadata, visible in
+                           the log's detail view (line 125, `clean_metadata`)
+      tags                 stored in SpendLogs.request_tags, which the Logs page
+                           can FILTER on (line 285) — so "show me every request
+                           that was rerouted" is a UI query, not a grep
+
+    The metadata dict is already on `data` by the time this runs:
+    `add_litellm_data_to_request` is awaited at common_request_processing.py:1370
+    and the pre-call hook at :1518. Its KEY DIFFERS BY ROUTE — `metadata` on
+    most, `litellm_metadata` on the ones in LITELLM_METADATA_ROUTES — so the
+    existing key is reused where there is one, and writing to the wrong name
+    would land the annotation somewhere nothing reads.
+
+    Tags are APPENDED. The proxy has already put its own in there (User-Agent),
+    and replacing the list would drop them.
+    """
+    key = "litellm_metadata" if isinstance(data.get("litellm_metadata"), dict) else "metadata"
+    md = data.get(key)
+    if not isinstance(md, dict):
+        md = {}
+        data[key] = md
+
+    existing = md.get("spend_logs_metadata")
+    md["spend_logs_metadata"] = {
+        **(existing if isinstance(existing, dict) else {}),
+        # Named `client_model` to match index.jsonl and modifications.jsonl —
+        # one vocabulary across all three records.
+        "client_model": override["from"],
+        "served_by": override["to"],
+        "route_rule": override["rule"],
+        "matched_keyword": override["matched"],
+    }
+
+    tags = md.get("tags")
+    tags = list(tags) if isinstance(tags, list) else []
+    for tag in (f"gateway-routed:{override['rule']}",
+                f"client-model:{override['from']}"):
+        if tag not in tags:
+            tags.append(tag)
+    md["tags"] = tags
+
+
+def _route_override(data: dict, changes: dict) -> None:
+    """Rewrite `data["model"]` when the conversation matches a routing rule.
+
+    Mutates `data` in place, and returns on the FIRST matching rule so the
+    manifest order is the precedence order.
+
+    A rule that matches but names the model already requested is a no-op and is
+    NOT logged: a developer who picked the local route deliberately should not
+    generate override lines in the audit trail.
+    """
+    if not ROUTE_RULES:
+        return
+
+    requested = data.get("model") or ""
+    haystack = "\n".join((
+        _system_text(data.get("system")),
+        _scan_text(data.get("messages"), ROUTE_SCAN_CHARS),
+    ))
+
+    for rule in ROUTE_RULES:
+        for keyword, pattern in rule["patterns"]:
+            if not pattern.search(haystack):
+                continue
+            # Matched. Return either way — a later rule must not get a second
+            # opinion on a conversation the first one has already claimed.
+            if rule["model"] != requested:
+                data["model"] = rule["model"]
+                changes["model_overridden"] = {
+                    "from": requested,
+                    "to": rule["model"],
+                    "rule": rule["name"],
+                    "matched": keyword,
+                }
+                _annotate_spend_log(data, changes["model_overridden"])
+            return
+
+
 def _slim_tools(data: dict, changes: dict) -> None:
     """Drop tool definitions a small-context local model cannot afford.
 
@@ -811,8 +1128,18 @@ def _modify(data: dict, call_type: str, key_alias) -> dict:
     a gap; a gateway that refuses all traffic is an outage.
     """
     changes = {}
+    requested_model = data.get("model")
 
-    # --- 1. max_tokens clamp -----------------------------------------------
+    # --- 1. content-based route override ------------------------------------
+    # FIRST, and everything below depends on it: steps 2 and 5 both branch on
+    # `data["model"]`, so they have to see the model that will actually serve
+    # the request, not the one the picker asked for. Getting this order wrong
+    # would exempt an overridden request from the clamp (it would still carry an
+    # Anthropic model name) and skip tool slimming on the one route that cannot
+    # survive without it.
+    _route_override(data, changes)
+
+    # --- 2. max_tokens clamp -----------------------------------------------
     model = data.get("model")
     if CLAMP_MAX_TOKENS > 0 and model not in CLAMP_EXEMPT:
         requested = data.get("max_tokens")
@@ -820,14 +1147,14 @@ def _modify(data: dict, call_type: str, key_alias) -> dict:
             data["max_tokens"] = CLAMP_MAX_TOKENS
             changes["max_tokens_clamped"] = {"from": requested, "to": CLAMP_MAX_TOKENS}
 
-    # --- 2. secret redaction -----------------------------------------------
+    # --- 3. secret redaction -----------------------------------------------
     if REDACT and isinstance(data.get("messages"), list):
         counts = {}
         _redact_in_place(data["messages"], counts)
         if counts:
             changes["secrets_redacted"] = counts
 
-    # --- 3. skill injection -------------------------------------------------
+    # --- 4. skill injection -------------------------------------------------
     # After redaction, deliberately: redaction walks `messages` only, and this
     # writes to `system`, so the order cannot matter today — but if redaction is
     # ever widened to `system`, injecting first would put our own content through
@@ -835,7 +1162,7 @@ def _modify(data: dict, call_type: str, key_alias) -> dict:
     if INJECT_MODE != "off":
         _inject_skills(data, changes)
 
-    # --- 4. tool slimming ---------------------------------------------------
+    # --- 5. tool slimming ---------------------------------------------------
     # LAST, deliberately. Skill injection above grows `system`, and this shrinks
     # `tools`; running the trim last means the saving it logs is measured
     # against the request we actually forward, not an intermediate one. It also
@@ -846,7 +1173,12 @@ def _modify(data: dict, call_type: str, key_alias) -> dict:
         _log_modification({
             "ts": time.strftime("%Y-%m-%dT%H:%M:%S"),
             "call_type": call_type,
+            # `model` is the route that will serve this request — post-override,
+            # so a reader of the audit trail sees the model that answered.
+            # `client_model` is what the picker sent, kept alongside it because
+            # "which developer asked for what" is the other half of the story.
             "model": model,
+            "client_model": requested_model,
             "key_alias": key_alias,
             "changes": changes,
         })

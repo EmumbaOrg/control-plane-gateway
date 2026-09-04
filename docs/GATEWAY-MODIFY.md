@@ -4,7 +4,12 @@
 (`ghcr.io/berriai/litellm:main-latest`, litellm `1.98.0`).
 
 The gateway no longer only *records* traffic — it can change it on the way past.
-Three behaviours ship, each individually switchable, all fail-open.
+Four behaviours ship, each individually switchable, all fail-open.
+
+**Behaviour 0 was added 4 Sep 2026** and is different in kind from the other
+three: it changes *which model answers*, not just what the model is sent. That
+forced a second change, to the capture side — see
+[Attribution](#attribution-the-captured-model-must-be-the-model-that-answered).
 
 ---
 
@@ -41,6 +46,211 @@ what gets forwarded.
 > **This is unaffected by the `anthropic-beta` gap.** That gap is about outbound
 > *headers* not being populated on this route. The request *body* is passed in and
 > returnable, which is all body modification needs. Two different code paths.
+
+---
+
+## Behaviour 0 — content-based route override
+
+**On by default**, one rule: a conversation that mentions **Extreme Networks** is
+served by the private local model (`local-qwen3-8b` → `ollama_chat/qwen3:8b`),
+whatever the developer selected in the picker.
+
+### Why
+
+Client material that must not leave the building is a policy, and "remember to
+switch your model first" is a control that fails the first time somebody is in a
+hurry. Moving the decision into the gateway makes it the default path instead of
+a habit: the developer keeps working with the model they picked, and the request
+for that client goes to on-prem inference without them doing anything.
+
+### Verified end to end, 4 Sep 2026
+
+Against the running stack, with `local-qwen3-8b` served by Ollama on the host.
+Same key, same route (`POST /v1/messages`), same selected model — the only
+difference is one phrase in the message.
+
+```bash
+# routed — the phrase is present
+curl -s http://localhost:4000/v1/messages \
+  -H "x-api-key: $(cat .vkey)" -H "anthropic-version: 2023-06-01" \
+  -H "content-type: application/json" \
+  -H "x-claude-code-session-id: live-routing" \
+  -d '{"model":"claude-haiku-4-5","max_tokens":64,
+       "messages":[{"role":"user",
+         "content":"Hi I am Asif from Extreme Networks. Reply with exactly: ack"}]}'
+```
+
+`capture/modifications.jsonl`:
+
+```json
+{"ts": "2026-09-04T10:56:53", "call_type": "anthropic_messages",
+ "model": "local-qwen3-8b", "client_model": "claude-haiku-4-5",
+ "key_alias": "plugin-skills-testing",
+ "changes": {"model_overridden": {"from": "claude-haiku-4-5",
+                                  "to": "local-qwen3-8b",
+                                  "rule": "extreme-networks-on-prem",
+                                  "matched": "extreme networks"}}}
+```
+
+`capture/index.jsonl`, the two runs side by side:
+
+| | selected | served by | captured `model` | `model_overridden` |
+|---|---|---|---|---|
+| phrase present | `claude-haiku-4-5` | `local-qwen3-8b` | `ollama_chat/qwen3:8b` | `true` |
+| phrase absent | `claude-haiku-4-5` | `claude-haiku-4-5` | `claude-haiku-4-5-20251001` | `false` |
+
+So LiteLLM's router **does** honour a `model` rewritten inside the pre-call hook —
+the open question from the sections below, now closed for this route.
+
+> The captured Anthropic model is the *dated* id (`…-20251001`) because that is
+> what Anthropic reports back. The alias is what was asked for; the dated id is
+> what answered. Recording the second is the point.
+
+### What is matched, and what is deliberately not
+
+The rule matches the **company name**, on word boundaries, case-insensitively,
+with flexible whitespace so a phrase wrapped across a line still triggers:
+`extreme networks`, `Extreme  Networks`, `extreme\nnetworks`, `extremenetworks`.
+
+It does **not** match `extreme network latency`, `extreme-throughput`, or
+`extremenetworksmigration`. This matters more than the positive cases: a false
+positive here does not fail loudly, it silently answers a developer's unrelated
+question with an 8B local model. The singular `extreme network` is therefore left
+out of the keyword list on purpose, and `extremenetworks` is listed as its own
+keyword rather than making the separator optional in the regex — spelling the
+accepted forms out is auditable, a cleverer pattern is how a rule starts matching
+things nobody signed off on.
+
+Both the conversation **and the `system` block** are scanned. A repo `CLAUDE.md`
+saying "this project is for <client>" arrives in `system`, and that is the
+likeliest place for the fact to be written down once rather than retyped.
+
+### It runs first, and that ordering is load-bearing
+
+The clamp (behaviour 1) exempts models by name and the tool slimmer (behaviour 4)
+selects routes by name, so both must see the *post-override* model. Run the
+override last instead and an overridden request keeps its Anthropic exemption
+(32000 output tokens against a route that holds 8192) and skips slimming — on a
+32,768-token local model that means Ollama **truncates the prompt in silence**,
+returns `200`, and the model answers as if the end of its own instructions did
+not exist. `verify_routing.py` check 7 exists to catch exactly that regression.
+
+Measured on the overridden path: 32000 → 8000 output tokens, tool definitions
+36 → 4.
+
+### What this costs, stated plainly
+
+1. **Capability.** `qwen3:8b` is not Haiku. The developer asked for one model and
+   got another, which is why the swap must be visible in the record rather than
+   quietly absorbed.
+2. **Context.** The client believes it is talking to a 200k-window model and
+   builds prompts to match; the local route holds 32,768. Slimming buys back
+   ~14.5k tokens, which is enough for ordinary turns and **not** enough for a
+   long session. There is no fix for this inside the gateway — the client sets
+   its context ceiling from the model it selected, and it selected Haiku.
+3. **No memory.** The decision is taken per request from the request's own text.
+   The only state is the history Claude Code resends each turn, so if the trigger
+   phrase ever falls outside `GATEWAY_ROUTE_SCAN_CHARS`, the route flips back to
+   the hosted model mid-conversation. The budget defaults to 2,000,000 characters
+   — an order of magnitude above the injector's — precisely because a silent flip
+   is worse than the scan cost. **It is a mitigation, not a guarantee.**
+4. **The client is not told.** See the note under Attribution below.
+
+---
+
+## Attribution: the captured model must be the model that answered
+
+Once the gateway can rewrite a route, **the model in the client's request is a
+request, not a record.** Logging it would make every override invisible in the
+capture, in usage tracking and in cost attribution — the metadata would say Haiku
+answered when `qwen3:8b` did, and the spend would be attributed to the wrong
+model.
+
+So `custom_capture.py` resolves the model from **what came back**, never from what
+was asked for (`_actual_model`), in this order:
+
+1. `response_obj["model"]` — the provider's own statement
+2. `standard_logging_object["model"]` — LiteLLM's view (`ollama_chat/qwen3:8b`)
+3. `kwargs["model"]`, then `litellm_params["model"]`
+4. `standard_logging_object["model_group"]` — the route, as a last resort
+
+If all of those are empty the field is left **null**. That is deliberate: a gap is
+honest, and the one fallback never used is the client's requested model, because
+that is the exact misattribution this change exists to prevent. It comes up on
+failed exchanges, where nothing came back — check 15 covers it.
+
+The client's selection is not thrown away; it moves to its own field. Every
+record now carries both:
+
+| Field | Meaning | Written to |
+|---|---|---|
+| `model` | the model that **answered** | `index.jsonl`, `*.response.json`, `modifications.jsonl` |
+| `client_model` | what the developer **picked** | `index.jsonl`, `modifications.jsonl` |
+| `model_group` | the LiteLLM route that served it | `index.jsonl` |
+| `model_overridden` | `client_model` and `model_group` disagree | `index.jsonl` |
+| `routing` | all four, next to the untouched original body | `*.request.json` |
+
+The per-exchange `*.request.json` needs that `routing` block because its `body` is
+the client's **original** request — `proxy_server_request` is recorded by the
+proxy at ingress, before the pre-call hook runs. That is a useful property (it is
+also how the two hooks reconcile without sharing any state), but it means someone
+reading a capture would otherwise see `claude-haiku-4-5` and no hint that qwen
+answered.
+
+### In the LiteLLM dashboard
+
+This is where anyone will actually look, so it is worth being precise about which
+half was free and which half needed code.
+
+**Free.** `LiteLLM_SpendLogs.model` and `.model_group` are written from the
+router, and the router ran *after* the override — so a rerouted request is
+logged, attributed and **priced** as the local model with no help from us.
+Verified 4 Sep 2026 by reading the table and the `/spend/logs` endpoint the UI's
+Logs page calls:
+
+| `model` | `model_group` | `custom_llm_provider` | `spend` |
+|---|---|---|---|
+| `ollama_chat/qwen3:8b` | `local-qwen3-8b` | `ollama_chat` | `2.8e-06` |
+| `anthropic/claude-haiku-4-5` | `claude-haiku-4-5` | `anthropic` | `3.8e-05` |
+
+Both rows came from the *same* selected model, `claude-haiku-4-5`; the only
+difference was one phrase in the message. Note the cost too — the routed request
+is billed at the local route's rate, not Anthropic's, so spend reporting is right
+for the same reason the model name is.
+
+**Not free.** The row above names what answered but not what was *asked for*, so
+a forced route and a developer's own deliberate local selection look identical in
+the UI. `_annotate_spend_log()` adds that half, through two fields LiteLLM
+already supports on the request's metadata dict:
+
+- `spend_logs_metadata` → `SpendLogs.metadata`, shown in the log's detail view:
+  ```json
+  {"client_model": "claude-haiku-4-5", "served_by": "local-qwen3-8b",
+   "route_rule": "extreme-networks-on-prem", "matched_keyword": "extreme networks"}
+  ```
+- `tags` → `SpendLogs.request_tags`, which the Logs page can **filter** on:
+  `gateway-routed:extreme-networks-on-prem`, `client-model:claude-haiku-4-5`.
+  So "show me every request that was rerouted, and what each developer had
+  selected" is a UI query rather than a grep over the capture directory.
+
+Two details that would fail silently if got wrong, and are covered by checks
+20–23: the metadata dict is reached under the key the route uses (`metadata` on
+most, `litellm_metadata` on LiteLLM's `LITELLM_METADATA_ROUTES`) — it is already
+on `data` because `add_litellm_data_to_request` is awaited at
+`common_request_processing.py:1370`, before the pre-call hook at `:1518` — and
+tags are **appended**, because the proxy has already put its own User-Agent tags
+in the list.
+
+> **⚠ Known gap: the HTTP response to the client still says `claude-haiku-4-5`.**
+> Verified 4 Sep 2026 — LiteLLM's `/v1/messages` translation echoes the requested
+> model back in the response body, even though the internal response object
+> honestly carries `ollama_chat/qwen3:8b` (which is what the capture records). So
+> the *gateway's* records are correct and the *developer's* client is not told
+> their request was rerouted. Fixing it means rewriting the response in a
+> post-call hook, including the streaming path, which is a larger change with its
+> own risk of breaking clients that validate the field. Not attempted. Whether
+> developers should be told is the same open question as behaviour 2's silent
+> redaction — see the list at the end of this document.
 
 ---
 
@@ -340,7 +550,7 @@ Three levels, cheapest first.
 python3 verify_modify.py
 ```
 
-16 checks over `_modify()` with Claude-Code-shaped bodies. Exit code 0 or 2, so it
+20 checks over `_modify()` with Claude-Code-shaped bodies. Exit code 0 or 2, so it
 can gate a commit. It forces its own configuration, so the result does not depend
 on what is currently exported in your shell. The injection checks load the **real**
 manifest and the **real** `SKILL.md`, with the container paths rewritten, so they
@@ -351,6 +561,30 @@ still clamped** (the prefix trap), that redaction is **deterministic**, and that
 injection is **idempotent and appended after the cache breakpoint** — the two
 ways it could silently destroy prompt caching or grow a prompt without bound. It
 does *not* prove the proxy calls the hook — that is level 2.
+
+Behaviour 0 and the attribution it forces have their own suite, because the
+property under test is different — it spans both hooks:
+
+```bash
+python3 verify_routing.py
+```
+
+23 checks. Part 1 drives `_modify()` for the override itself: the trigger fires,
+ordinary prose does not (check 4 — the false positives that would silently
+downgrade unrelated work), the `system` block is scanned too, and the override
+runs **before** the clamp and the slimmer (check 7). Part 2 drives the real
+`_capture()` with callback payloads shaped like the ones in `capture/_kwargs`,
+and asserts the requirement directly:
+
+| | selected | actual | captured |
+|---|---|---|---|
+| routing occurs | `claude-haiku-4-5` | `qwen3:8b` | `qwen3:8b` |
+| no routing | `claude-haiku-4-5` | `claude-haiku-4-5-20251001` | `claude-haiku-4-5-20251001` |
+
+plus the trap that matters most: with **no** response to read, the captured model
+falls back to the route (`local-qwen3-8b`) and **never** to the client's request.
+Part 3 covers the dashboard annotation — the right metadata key per route, and
+tags appended rather than replaced.
 
 ### 2. The hook is loaded in the running container
 
@@ -476,6 +710,8 @@ the counter tracks `Skill` tool calls, and injection deliberately bypasses those
 
 | Variable | Default | Effect |
 |---|---|---|
+| `GATEWAY_ROUTE_RULES` | the Extreme Networks rule | JSON list of `{name, model, keywords}`; `off` disables route override |
+| `GATEWAY_ROUTE_SCAN_CHARS` | `2000000` | How much conversation text is scanned for a trigger |
 | `GATEWAY_MAX_OUTPUT_TOKENS` | `8000` | Output ceiling. `0` disables the clamp |
 | `GATEWAY_CLAMP_EXEMPT_MODELS` | the 4 Anthropic aliases | Exact matches, comma-separated |
 | `GATEWAY_REDACT` | `off` | `on` enables secret redaction |
@@ -512,6 +748,19 @@ Wired in `docker-compose.yml`; change and `docker compose up -d --force-recreate
   organisational mandate means `always`, which rewrites the prompts of people who
   did not opt in — a decision for whoever owns engineering standards, not for
   whoever runs the gateway.
+- **Who owns the routing rules, and what is the review path?** One rule ships,
+  written by whoever needed it. A rule is a policy statement about where a
+  client's data may be processed: adding one to `GATEWAY_ROUTE_RULES` is a
+  configuration change any operator can make, and a wrong keyword downgrades
+  unrelated work to an 8B model in silence. That list needs a named owner.
+- **Should the developer be told their request was rerouted?** Today the gateway
+  knows and the client does not (see the gap under Attribution). This is the same
+  question as silent redaction, with higher stakes: the answer came from a
+  materially weaker model.
+- **Keyword matching is the weakest part of this.** It catches the client's name,
+  not the client's data — a request full of that client's code that never names
+  them is not routed. Treat behaviour 0 as a default-path improvement, not as a
+  data-loss control.
 - **Prompt caching under redaction is untested on a long real session.** The
   replacement is deterministic so it *should* hold; confirm with a real
   `cache_read_input_tokens` reading before trusting it.

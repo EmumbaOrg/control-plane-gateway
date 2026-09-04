@@ -86,6 +86,21 @@ services:
       # Anthropic and want the tokens back.
       GATEWAY_INJECT_SKILL_MODELS: "${GATEWAY_INJECT_SKILL_MODELS:-}"
       GATEWAY_INJECT_MAX_CHARS: "${GATEWAY_INJECT_MAX_CHARS:-20000}"
+      # Content-based route override. Empty means the built-in policy: a
+      # conversation naming Extreme Networks is served by the private local
+      # model whatever the developer picked in the picker. `off` disables it.
+      #
+      # A rule is a policy statement about where a client's data may be
+      # processed, so treat this like a permission list, not a tuning knob: the
+      # keywords are matched on word boundaries and a loose one silently
+      # downgrades unrelated work to an 8B local model. Shape:
+      #   [{"name":"...","model":"local-qwen3-8b","keywords":["acme corp"]}]
+      GATEWAY_ROUTE_RULES: "${GATEWAY_ROUTE_RULES:-}"
+      # How much conversation text is scanned for a trigger. Large on purpose —
+      # Claude Code resends the whole history, and if the trigger phrase falls
+      # outside this budget on a later turn the route flips back to the hosted
+      # model mid-conversation. See ../docs/GATEWAY-MODIFY.md, behaviour 0.
+      GATEWAY_ROUTE_SCAN_CHARS: "${GATEWAY_ROUTE_SCAN_CHARS:-2000000}"
     volumes:
       - ./config.yaml:/app/config.yaml:ro
       - ./custom_capture.py:/app/custom_capture.py:ro

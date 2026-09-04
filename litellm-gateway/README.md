@@ -21,6 +21,7 @@ then settles the adopt / hybrid / build decision.
 | `capture/` | Output. `<session-id>/*.json.gz`, `index.jsonl`, `_kwargs/` |
 | `skills-inject.json` | Which skills the gateway injects into matching requests, and their triggers |
 | `verify_modify.py` | Offline scorecard for the request-modification hook |
+| `verify_routing.py` | Offline scorecard for content-based route override, and for whether the captured model — in the capture *and* in the dashboard's spend logs — names the model that actually answered |
 
 Documentation lives in [`../docs/`](../docs/) — start with
 [`GATEWAY-OVERVIEW.md`](../docs/GATEWAY-OVERVIEW.md), and see
