@@ -120,15 +120,19 @@ _DEFAULT_ROUTE_RULES = [
     {
         "name": "extreme-networks-on-prem",
         "model": "local-qwen3-8b",
-        # The COMPANY NAME only, deliberately. "extreme network" without the `s`
-        # also matches "extreme network latency", and the cost of a false
-        # positive here is not cosmetic: it silently downgrades an unrelated
-        # request to an 8B model. Keep additions to this list unambiguous.
-        # `extremenetworks` is listed separately rather than making the
-        # separator optional in the regex: spelling the accepted forms out is
-        # auditable, and a cleverer pattern is how a rule starts matching
-        # things nobody signed off on.
-        "keywords": ["extreme networks", "extremenetworks"],
+        # ONE keyword, matched deliberately WIDELY — see `_compile_route_rules`
+        # for the exact pattern. Singular and plural both trigger, so does any
+        # separator or none (`extreme-network`, `extremenetwork`), and so does
+        # the phrase appearing inside a longer word
+        # (`extremenetworksmigration`, a branch name).
+        #
+        # ⚠ THIS OVER-MATCHES ON PURPOSE, and the cost is real: "extreme network
+        # latency" now routes an unrelated request to an 8B model. That is the
+        # accepted trade — a rule about where a client's data may be processed
+        # should fail toward keeping data in, not toward letting it out. Decided
+        # 7 Sep 2026; the narrow word-boundary version is in git history if the
+        # trade is ever revisited.
+        "keywords": ["extreme network"],
     },
 ]
 
@@ -144,9 +148,23 @@ ROUTE_SCAN_CHARS = int(os.environ.get("GATEWAY_ROUTE_SCAN_CHARS", "2000000"))
 def _compile_route_rules(raw: str):
     r"""Parse and compile the rules once, at import.
 
-    Whitespace between the words of a keyword is matched flexibly (`\s+`) so a
-    phrase broken across a line still triggers, and each phrase is anchored on
-    word boundaries so `extremenetworks-migration` does not.
+    MATCHING IS DELIBERATELY WIDE. A keyword's words are joined by `[\s\-_]*` —
+    zero or more spaces, hyphens or underscores — and the pattern carries NO
+    `\b` anchors, so it is a plain substring search. One keyword therefore
+    covers every spelling a developer might actually type:
+
+        "extreme network"  matches  extreme networks, Extreme Network,
+                                    extreme-network, extreme_networks,
+                                    extremenetwork, extremenetworkstaging,
+                                    extremenetworksmigration,
+                                    extreme\nnetworks   (wrapped across a line)
+
+    ⚠ IT ALSO MATCHES ORDINARY PROSE: "extreme network latency" trips this rule
+    and sends that request to the local model. That is the accepted trade, not
+    an oversight — see `_DEFAULT_ROUTE_RULES`. The consequence for whoever edits
+    a rule: a SHORT or COMMON keyword is now dangerous in a way it was not when
+    boundaries were enforced. `keywords: ["net"]` would reroute most of the
+    working day. Keep every keyword a distinctive multi-word name.
     """
     if raw.lower() in ("off", "0", "false", "no", "none"):
         return []
@@ -170,7 +188,7 @@ def _compile_route_rules(raw: str):
             target = str(rule["model"]).strip()
             patterns = [
                 (kw, re.compile(
-                    r"\b" + r"\s+".join(re.escape(w) for w in str(kw).split()) + r"\b",
+                    r"[\s\-_]*".join(re.escape(w) for w in str(kw).split()),
                     re.IGNORECASE))
                 for kw in rule.get("keywords") or [] if str(kw).strip()
             ]

@@ -91,9 +91,14 @@ services:
       # model whatever the developer picked in the picker. `off` disables it.
       #
       # A rule is a policy statement about where a client's data may be
-      # processed, so treat this like a permission list, not a tuning knob: the
-      # keywords are matched on word boundaries and a loose one silently
-      # downgrades unrelated work to an 8B local model. Shape:
+      # processed, so treat this like a permission list, not a tuning knob.
+      # Keywords are matched as CASE-INSENSITIVE SUBSTRINGS with an optional
+      # separator and NO word boundaries (widened 7 Sep 2026), so "extreme
+      # network" also catches extremenetworks, extreme-network and
+      # extremenetworksmigration — and "extreme network latency" too. A short
+      # or common keyword therefore silently downgrades large amounts of
+      # unrelated work to an 8B local model: keep each one a distinctive
+      # multi-word name. Shape:
       #   [{"name":"...","model":"local-qwen3-8b","keywords":["acme corp"]}]
       GATEWAY_ROUTE_RULES: "${GATEWAY_ROUTE_RULES:-}"
       # How much conversation text is scanned for a trigger. Large on purpose —

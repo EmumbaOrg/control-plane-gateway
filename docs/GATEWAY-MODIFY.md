@@ -89,7 +89,7 @@ curl -s http://localhost:4000/v1/messages \
  "changes": {"model_overridden": {"from": "claude-haiku-4-5",
                                   "to": "local-qwen3-8b",
                                   "rule": "extreme-networks-on-prem",
-                                  "matched": "extreme networks"}}}
+                                  "matched": "extreme network"}}}
 ```
 
 `capture/index.jsonl`, the two runs side by side:
@@ -106,20 +106,40 @@ the open question from the sections below, now closed for this route.
 > what Anthropic reports back. The alias is what was asked for; the dated id is
 > what answered. Recording the second is the point.
 
-### What is matched, and what is deliberately not
+### What is matched — widely, on purpose
 
-The rule matches the **company name**, on word boundaries, case-insensitively,
-with flexible whitespace so a phrase wrapped across a line still triggers:
-`extreme networks`, `Extreme  Networks`, `extreme\nnetworks`, `extremenetworks`.
+**Widened 7 Sep 2026.** The rule carries one keyword, `extreme network`, and it
+is matched as a **case-insensitive substring with an optional separator** — the
+words are joined by `[\s\-_]*` and there are **no word boundaries**. One keyword
+therefore covers every spelling a developer might actually type:
 
-It does **not** match `extreme network latency`, `extreme-throughput`, or
-`extremenetworksmigration`. This matters more than the positive cases: a false
-positive here does not fail loudly, it silently answers a developer's unrelated
-question with an 8B local model. The singular `extreme network` is therefore left
-out of the keyword list on purpose, and `extremenetworks` is listed as its own
-keyword rather than making the separator optional in the regex — spelling the
-accepted forms out is auditable, a cleverer pattern is how a rule starts matching
-things nobody signed off on.
+| Text | Matches |
+|---|---|
+| `Extreme Networks`, `extreme networks`, `EXTREME NETWORKS` | ✅ plural, any case |
+| `extreme network` | ✅ singular |
+| `extreme-network`, `extreme_networks` | ✅ any separator |
+| `extremenetworks`, `extremenetwork` | ✅ no separator |
+| `extreme\nnetworks` | ✅ wrapped across a line |
+| `extremenetworksmigration`, `extremenetworkstaging` | ✅ inside a longer word — branch names |
+
+**This over-matches, and that is the accepted trade.** `we are seeing extreme
+network latency in staging` now routes to the local 8B model. The earlier version
+of this rule was anchored on word boundaries and the plural specifically to avoid
+that, and the decision was reversed: a rule about *where a client's data may be
+processed* should fail toward keeping data in, not toward letting it out. The
+false positive costs a developer one degraded answer, which they can see in the
+audit trail; the false negative sends client material to a hosted provider, which
+nobody sees. `verify_routing.py` **asserts** the over-match rather than tolerating
+it, so narrowing the pattern fails the scorecard and forces the policy decision to
+be revisited deliberately.
+
+⚠ **The consequence for anyone editing a rule.** Without word boundaries, a short
+or common keyword is dangerous in a way it was not before — `keywords: ["net"]`
+would reroute most of the working day. Keep every keyword a distinctive
+multi-word name.
+
+Two words are still required, adjacent: `extreme-throughput`, `the network switch
+in rack 4`, and `extreme caution on the network migration` are all left alone.
 
 Both the conversation **and the `system` block** are scanned. A repo `CLAUDE.md`
 saying "this project is for <client>" arrives in `system`, and that is the
@@ -226,7 +246,7 @@ already supports on the request's metadata dict:
 - `spend_logs_metadata` → `SpendLogs.metadata`, shown in the log's detail view:
   ```json
   {"client_model": "claude-haiku-4-5", "served_by": "local-qwen3-8b",
-   "route_rule": "extreme-networks-on-prem", "matched_keyword": "extreme networks"}
+   "route_rule": "extreme-networks-on-prem", "matched_keyword": "extreme network"}
   ```
 - `tags` → `SpendLogs.request_tags`, which the Logs page can **filter** on:
   `gateway-routed:extreme-networks-on-prem`, `client-model:claude-haiku-4-5`.
@@ -569,9 +589,11 @@ property under test is different — it spans both hooks:
 python3 verify_routing.py
 ```
 
-23 checks. Part 1 drives `_modify()` for the override itself: the trigger fires,
-ordinary prose does not (check 4 — the false positives that would silently
-downgrade unrelated work), the `system` block is scanned too, and the override
+24 checks. Part 1 drives `_modify()` for the override itself: every spelling of
+the client name fires (check 3, nine variants), the deliberate over-match on
+`extreme network latency` is **asserted** rather than tolerated (check 4), prose
+sharing only one word of the keyword is left alone (check 5), the `system` block
+is scanned too, and the override
 runs **before** the clamp and the slimmer (check 7). Part 2 drives the real
 `_capture()` with callback payloads shaped like the ones in `capture/_kwargs`,
 and asserts the requirement directly:

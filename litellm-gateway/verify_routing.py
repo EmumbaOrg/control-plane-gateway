@@ -148,29 +148,47 @@ out = modify(body("Refactor this React component to memoise the row list"))
 report("Unrelated request keeps the selected model",
        out["model"] == PICKED, f'model stayed {out["model"]}')
 
-# --- 3. case and line breaks must not defeat it ----------------------------
+# --- 3. every spelling a developer might actually type ---------------------
+# The rule carries ONE keyword, "extreme network", matched with no word
+# boundaries and an optional separator, so all of these must trigger. Singular
+# and plural, any separator or none, and the phrase buried inside a longer
+# word — a branch name is the realistic case for that last one.
 variants = {
-    "lowercase": "we are onboarding extreme networks next week",
+    "lowercase plural": "we are onboarding extreme networks next week",
     "uppercase": "EXTREME NETWORKS ticket 4471",
+    "singular": "the extreme network team wants a switch config review",
     "wrapped": "the customer is extreme\nnetworks and the box is a switch",
     "single word": "see the extremenetworks repo",
+    "hyphenated": "cloned the extreme-network provisioning service",
+    "underscored": "the extreme_networks_audit script",
+    "inside a word": "the extremenetworksmigration branch is stale",
+    "inside a word, singular": "deploying to extremenetworkstaging tonight",
 }
 mismatched = [k for k, t in variants.items() if modify(body(t))["model"] != LOCAL]
-report("Matching survives case, wrapping and the one-word spelling",
-       not mismatched, "all 4 forms trigger" if not mismatched
+report("Every spelling of the client name triggers the route",
+       not mismatched, f"all {len(variants)} forms trigger" if not mismatched
        else f"missed: {mismatched}")
 
-# --- 4. THE TRAP: no false positive on ordinary prose ----------------------
-# "extreme network latency" is the reason the rule matches the plural company
-# name and not the singular word pair. A false positive here does not fail
-# loudly — it silently answers with an 8B model.
+# --- 4. the accepted cost of matching that widely --------------------------
+# Widening the rule on 7 Sep 2026 (singular + substring) knowingly gave up the
+# "extreme network latency" false positive. This check exists so the trade is
+# ASSERTED rather than discovered: it fails the day someone narrows the pattern
+# without also revisiting the policy decision, and it documents in the
+# scorecard exactly what over-matching costs.
+out = modify(body("we are seeing extreme network latency in staging"))
+report("Accepted over-match: 'extreme network latency' also routes local",
+       out["model"] == LOCAL,
+       f'{out["model"]} — deliberate; fail toward keeping data in')
+
+# Prose that shares only ONE word with the keyword must still be left alone,
+# or the rule would be indistinguishable from "reroute everything".
 safe = {
-    "adjective": "we are seeing extreme network latency in staging",
-    "substring": "the extremenetworksmigration branch is stale",
-    "hyphenated": "run the extreme-throughput benchmark",
+    "first word only": "run the extreme-throughput benchmark",
+    "second word only": "the network switch in rack 4 is flapping",
+    "words far apart": "extreme caution on the network migration, please",
 }
 tripped = [k for k, t in safe.items() if modify(body(t))["model"] != PICKED]
-report("No false positive on adjectival or substring uses",
+report("Prose sharing only one word of the keyword is left alone",
        not tripped, "all 3 left alone" if not tripped else f"tripped: {tripped}")
 
 # --- 5. the trigger is honoured in the system block too --------------------
@@ -335,7 +353,7 @@ md = out["metadata"]
 report("Spend log annotated with the developer's selection",
        md["spend_logs_metadata"] == {"client_model": PICKED, "served_by": LOCAL,
                                      "route_rule": "extreme-networks-on-prem",
-                                     "matched_keyword": "extreme networks"}
+                                     "matched_keyword": "extreme network"}
        and md["user_api_key"] == "x",
        "spend_logs_metadata written, existing metadata untouched")
 
