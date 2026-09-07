@@ -379,6 +379,87 @@ model_list:
       max_output_tokens: 32000
 
   # ---------------------------------------------------------------------------
+  # OpenAI — FIRST PARTY. This entry talks to OpenAI's own API with an Emumba
+  # OpenAI key: one account, one hop, one party seeing the prompt. The
+  # `gpt-oss-*` routes above are NOT this — those are OpenAI's open-weight
+  # models served by Groq, and no OpenAI account is involved. Until this
+  # section existed, nothing in this gateway had ever called OpenAI.
+  #
+  # RESOLVED 7 Sep 2026 — this route now returns real completions. It spent a
+  # while 429ing on `insufficient_quota` ("You have no credits remaining")
+  # against a credit-less account; a funded key replaced it and the route was
+  # re-verified end to end:
+  #     POST :4000/v1/chat/completions  openai-gpt-41-nano        HTTP 200
+  #     POST :4001/v1/messages          claude-haiku-4-5-oai-41n  HTTP 200
+  # Both returned content and real token usage. Keep the history in mind when
+  # a 429 reappears here: on this provider it means billing, not a bad key
+  # (401) and not a wrong model id (404).
+  #
+  # ⚠ THE CONTAINER CACHES THE KEY AT STARTUP, AND THIS COST REAL TIME. After
+  # editing OPENAI_API_KEY in .env, `docker compose restart litellm` is NOT
+  # enough — restart reuses the container's existing environment, so the old
+  # key keeps answering and every call keeps 429ing exactly as before. Use
+  # `docker compose up -d litellm`, which recreates the container. To tell the
+  # two apart without printing a secret, compare fingerprints:
+  #     .env      : set -a; . ./.env; set +a
+  #     container : docker compose exec -T litellm printenv OPENAI_API_KEY
+  # then sha256 both and compare the first 8 chars. Different digests mean the
+  # container is stale and the 429 is telling you nothing about your new key.
+  #
+  # WHY gpt-4.1-nano AND NOT gpt-5-nano. gpt-5-nano is cheaper per token —
+  # verified 7 Sep 2026 against https://developers.openai.com/api/docs/pricing:
+  #     gpt-5-nano     in $0.05/1M   out $0.40/1M   <- cheapest chat model
+  #     gpt-4.1-nano   in $0.10/1M   out $0.40/1M
+  #     gpt-4o-mini    in $0.15/1M   out $0.60/1M
+  # At smoke-test volume the difference is about $0.0015 per THOUSAND calls,
+  # so the saving is a rounding error and the tie-breaker is failure modes,
+  # not price. gpt-5-nano is a reasoning model and breaks three assumptions a
+  # plain chat call makes: it rejects `max_tokens` (wants
+  # `max_completion_tokens`), it rejects a non-default `temperature`, and it
+  # bills invisible reasoning tokens as output. Each is an HTTP 400 that is
+  # indistinguishable at a glance from a bad key or a wrong provider prefix —
+  # the exact ambiguity a connectivity test exists to remove. This is the same
+  # class of trap the guessed Anthropic dated IDs set at the top of this file:
+  # a model-level rejection reads as "the gateway is broken".
+  #
+  # `drop_params: false` IS GLOBAL IN THIS CONFIG (see litellm_settings), so
+  # unrecognised params ERROR rather than being silently dropped. That is
+  # correct for a capture gateway and it is also why the plain, non-reasoning
+  # model is the right one to prove the path with. Once this route is known
+  # good, gpt-5-nano is the cheaper choice for volume — register it as a
+  # SECOND entry then, and give it the params it actually wants.
+  #
+  # PROVIDER. LiteLLM's native `openai` provider needs no api_base. Verified in
+  # this image 7 Sep 2026: get_llm_provider('openai/gpt-4.1-nano') ->
+  # ('gpt-4.1-nano', 'openai', None, None). The trailing `None` is the api_base
+  # and it is CORRECT — LiteLLM sets none and the OpenAI SDK applies its own
+  # default of https://api.openai.com/v1. Contrast the zai route below, which
+  # resolves to an explicit https://api.z.ai/api/paas/v4. Do not read this
+  # `None` as missing configuration and go adding an api_base.
+  #
+  # OUTPUT CLAMP APPLIES HERE, DELIBERATELY. This model is not in
+  # GATEWAY_CLAMP_EXEMPT_MODELS, so custom_capture.py's pre-call hook clamps
+  # Claude Code's 32000-token reservation to GATEWAY_MAX_OUTPUT_TOKENS (8000).
+  # That is wanted, not incidental: providers gate on the reservation, and a
+  # low-balance account 402s on requests that would have spent 60 tokens.
+  # 8000 sits well under this model's own 32768 ceiling, so nothing truncates.
+  #
+  # No nominal costs here, unlike the z.ai and Ollama routes below: those are
+  # priced at nothing by their provider and needed invented figures to stay
+  # inside `max_budget`. This route bills real money and LiteLLM's own cost
+  # map carries the real rates, so budgets and attribution work untouched.
+  # DROP PARAMS HERE TOO, for the same reason as the picker alias below: any
+  # client that sends Anthropic-style `thinking` (or an OpenAI `reasoning`
+  # block) gets a hard 400 from a non-reasoning model. See the alias for the
+  # full account of that failure.
+  - model_name: openai-gpt-41-nano
+    litellm_params:
+      model: openai/gpt-4.1-nano
+      api_key: os.environ/OPENAI_API_KEY
+      drop_params: true
+      additional_drop_params: ["thinking", "reasoning", "reasoning_effort"]
+
+  # ---------------------------------------------------------------------------
   # Local models, via Ollama on the developer's own machine. No API key, no
   # provider account, and no prompt leaves the laptop — the private-model
   # option. See ../docs/NON-ANTHROPIC-MODELS.md.
@@ -627,6 +708,44 @@ model_list:
       output_cost_per_token: 0.0000001
       max_input_tokens: 128000
       max_output_tokens: 32000
+
+  # OpenAI picker alias. The honest `openai-gpt-41-nano` above can NEVER reach
+  # the desktop picker: its id trips the app's DENY regex twice, on `openai`
+  # and on `gpt`, and DENY is a hard veto evaluated before the `claude` prefix
+  # is even considered. `oai-41n` is the vendor-free stand-in — checked against
+  # DENY in full before committing, as every alias here must be. Do not
+  # "clarify" this name back to anything containing `openai` or `gpt`; it would
+  # silently vanish from the picker with no error anywhere.
+  #
+  # No model_info block, unlike the zai and local aliases above. Those invent
+  # nominal costs because their providers price them at zero and `max_budget`
+  # needs a non-zero figure to work against. This route bills real money and
+  # LiteLLM's own cost map carries the real rates for openai/gpt-4.1-nano, so
+  # spend attribution and budgets are correct without help. The context window
+  # comes from the same map for the same reason.
+  #
+  # Output clamp: this alias is not in GATEWAY_CLAMP_EXEMPT_MODELS either, so
+  # custom_capture.py trims the app's 32000-token reservation to 8000 — which
+  # matters more here than on the CLI, since the desktop app has no
+  # CLAUDE_CODE_MAX_OUTPUT_TOKENS of its own.
+  # DROP PARAMS IS MANDATORY ON THIS ROUTE, and it was missing at first. The
+  # desktop app sends an Anthropic `thinking` block on every /v1/messages call;
+  # LiteLLM translates it for an OpenAI-shaped upstream and gpt-4.1-nano — a
+  # plain chat model, not a reasoning one — answers with a hard 400:
+  #     Unsupported parameter: 'reasoning.effort' is not supported with this
+  #     model.  ... Received Model Group=claude-haiku-4-5-oai-41n
+  # With the global `drop_params: false` (see litellm_settings) that reaches the
+  # user verbatim and reads like a broken gateway or a bad key, when nothing is
+  # wrong but a param the client cannot be told to stop sending. `drop_params`
+  # alone covers the translated `reasoning_effort`; the explicit list also
+  # covers the newer nested `reasoning` block and the raw `thinking`
+  # passthrough, so the same 400 cannot return under a different spelling.
+  - model_name: claude-haiku-4-5-oai-41n
+    litellm_params:
+      model: openai/gpt-4.1-nano
+      api_key: os.environ/OPENAI_API_KEY
+      drop_params: true
+      additional_drop_params: ["thinking", "reasoning", "reasoning_effort"]
 
   - model_name: claude-sonnet-4-5-mmx-m3-free
     litellm_params:

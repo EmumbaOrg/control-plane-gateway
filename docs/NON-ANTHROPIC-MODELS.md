@@ -6,8 +6,8 @@ Code already talks to whatever `ANTHROPIC_BASE_URL` points at. The whole change
 is five entries in `config.yaml` and one environment variable.
 
 Provider used here: **OpenRouter**, because one key reaches OpenAI, Google,
-DeepSeek, xAI and others — the fewest credentials to manage for a PoC. z.ai and
-a local Ollama model are reached first-party instead, each with its own
+DeepSeek, xAI and others — the fewest credentials to manage for a PoC. **OpenAI,
+z.ai and a local Ollama model are reached first-party instead**, each with its own
 configuration; see their sections below.
 
 ---
@@ -76,6 +76,97 @@ see the warning under **Models configured**.
 
 ---
 
+## OpenAI, first-party — working end to end
+
+Everything OpenAI-branded above is **indirect**: `gemini-3.7-flash` and the rest
+go through OpenRouter, and `groq-gpt-oss-120b` / `-20b` are OpenAI's *open-weight*
+models served by Groq — no OpenAI account is involved in either. One entry now
+talks to **OpenAI itself**, with an Emumba OpenAI key: one account, one hop.
+
+| Alias | Picker alias | Model | Input | Output | Context | Max output |
+| --- | --- | --- | --- | --- | --- | --- |
+| `openai-gpt-41-nano` | `claude-haiku-4-5-oai-41n` | `openai/gpt-4.1-nano` | $0.10 / 1M | $0.40 / 1M | 1,047,576 | 32,768 |
+
+**`gpt-5-nano` is cheaper — $0.05 / 1M input — and was deliberately not chosen.**
+The saving is roughly $0.0015 per *thousand* smoke-test calls, so the tie-breaker
+is failure modes, not price. `gpt-5-nano` is a reasoning model that rejects
+`max_tokens` (wants `max_completion_tokens`), rejects a non-default `temperature`,
+and bills invisible reasoning tokens as output. Each is a hard `400` that looks
+exactly like a bad key or a wrong provider prefix — the ambiguity a connectivity
+test exists to remove. Register `gpt-5-nano` as a *second* entry once volume
+justifies it, with the params it actually wants.
+
+### ⚠ `drop_params: true` is mandatory on this route
+
+It was missing at first, and the picker alias failed hard because of it. The
+desktop app sends an Anthropic `thinking` block on every `/v1/messages` call.
+LiteLLM translates it for an OpenAI-shaped upstream, and `gpt-4.1-nano` — a plain
+chat model, not a reasoning one — answers:
+
+```
+400  Unsupported parameter: 'reasoning.effort' is not supported with this model.
+     ... Received Model Group=claude-haiku-4-5-oai-41n
+```
+
+Under this config's global `drop_params: false` that reaches the user verbatim and
+reads like a broken gateway or a bad key, when nothing is wrong except a param the
+client cannot be told to stop sending. Both entries therefore carry:
+
+```yaml
+drop_params: true
+additional_drop_params: ["thinking", "reasoning", "reasoning_effort"]
+```
+
+`drop_params` alone covers the translated `reasoning_effort`; the explicit list
+also covers the newer nested `reasoning` block and the raw `thinking`
+passthrough, so the same `400` cannot come back under a different spelling.
+
+### Verified
+
+`verify_openai.py`, 7 Sep 2026, both request shapes, `max_tokens: 16`, prompt
+*"Reply with exactly: OK"* — **4/4 pass**:
+
+| Check | Result |
+| --- | --- |
+| `GET /v1/models` lists the alias | ✅ among 38 routes |
+| Cost map populated (not a silent `$0`) | ✅ $0.10 / $0.40 per 1M — agrees with OpenAI's published page to the digit |
+| `POST /v1/chat/completions` | ✅ `200` — `text='OK'`, in 12 / out 1 |
+| `POST /v1/messages` | ✅ `200` — `text='OK'`, in 12 / out 2 |
+
+The picker alias was probed separately **with a `thinking` block attached**, which
+is what the desktop app really sends: `200` both with and without it.
+
+```bash
+docker compose exec -T litellm python - < verify_openai.py
+```
+
+### If it ever 429s again, read it as billing
+
+This route first ran against a credit-less account and returned `429`
+`insufficient_quota` — *"You have no credits remaining."* — on every call. That
+was never a gateway fault: OpenAI returns `401` for a bad key and `404` for an
+unknown model id, and `credit_balance_exhausted` is account-specific, so the
+provider had identified the account before refusing it. `verify_openai.py` names
+*which* of the three it is — `401` your key, `404` your config, `429` their
+balance — so nobody re-debugs the gateway over an empty wallet. Top up at
+<https://platform.openai.com/settings/organization/billing>.
+
+⚠ **And confirm the container actually picked up the new key.** `docker compose
+restart litellm` reuses the container's existing environment, so an edited
+`OPENAI_API_KEY` in `.env` does **not** take effect and every call keeps `429`ing
+exactly as before — which looks precisely like the replacement key being bad too.
+Use `docker compose up -d litellm`, which recreates the container. To tell the two
+cases apart without printing a secret, `sha256` the value from `.env` and the one
+from `docker compose exec -T litellm printenv OPENAI_API_KEY` and compare the
+first eight characters.
+
+**The rule the z.ai section states still stands**: *do not register a route before
+funding it, because one that answers every call with a billing error reads as a
+broken gateway.* This route was briefly the exception to it, and the resolution
+was to fund the account rather than to keep arguing for the exception.
+
+---
+
 ## Read this before you start
 
 **Anthropic does not support this configuration.** From their own gateway docs:
@@ -97,6 +188,9 @@ Three files, all additively. Nothing that worked before behaves differently.
 | --- | --- |
 | `config.yaml` | Five new `model_list` entries, appended below the Anthropic ones, each with pinned costs |
 | `docker-compose.yml` | `OPENROUTER_API_KEY` passed through, optional (`:-`, not `:?`) |
+| `config.yaml` | Two first-party **OpenAI** entries — `openai-gpt-41-nano` and the picker alias `claude-haiku-4-5-oai-41n`, both → `openai/gpt-4.1-nano`, both with `drop_params: true`; no hand-pinned costs needed (LiteLLM's cost map already carries the real rates) |
+| `docker-compose.yml` | `OPENAI_API_KEY` passed through, optional (`:-`, not `:?`) |
+| `verify_openai.py` | Four-check verifier for that route; distinguishes `401` / `404` / `429` |
 | `NON-ANTHROPIC-MODELS.md` | This file |
 | `picker-shim/nginx.conf` | Desktop model-picker label rewriting, on port 4001 — see the picker section |
 | `docker-compose.yml` | `picker-shim` service (nginx), additive; port 4000 unchanged |
@@ -513,6 +607,7 @@ read `claude-sonnet-4-5-mmx-m3-free`. `picker-shim/` fixes that.
 | `nemotron-free` | `claude-haiku-4-5-nvda-free` | Nemotron 3.5 Lightning free (gateway) |
 | `groq-gpt-oss-120b` | `claude-sonnet-4-5-groq-oss-120b` | Groq gpt-oss-120b (gateway) |
 | `groq-gpt-oss-20b` | `claude-haiku-4-5-groq-oss-20b` | Groq gpt-oss-20b (gateway) |
+| `openai-gpt-41-nano` | `claude-haiku-4-5-oai-41n` | GPT-4.1 nano (gateway) |
 | `minimax-m3-free` | `claude-sonnet-4-5-mmx-m3-free` | MiniMax M3 free (gateway) |
 | `nemotron-super-120b-free` | `claude-sonnet-4-5-nvda-super-120b-free` | Nemotron 3 Super 120B free (gateway) |
 | `north-mini-code-free` | `claude-haiku-4-5-north-mini-code-free` | North Mini Code free (gateway) |
