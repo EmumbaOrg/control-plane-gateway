@@ -37,7 +37,12 @@ _kwargs/
 # it was untracked with `git rm --cached` in the same commit that added this rule.
 # ---------------------------------------------------------------------------
 Emumba_PoC_Enterprise_Control_Plane.html
-# Same category: a status deck for leadership, distributed by hand.
+# Same category: a status deck for leadership, distributed by hand. It is
+# GENERATED from docs/PROJECT-STATUS.md, so committing it would version the same
+# claims twice and guarantee the copies drift — which is exactly what happened on
+# 7 Sep 2026, when the deck was briefly staged still asserting the OpenAI route
+# was unfunded and dead hours after it had been fixed. The Markdown is the
+# source of truth; regenerate the deck when you need to hand one out.
 Emumba_PoC_Status_Report.html
 
 # ---------------------------------------------------------------------------
