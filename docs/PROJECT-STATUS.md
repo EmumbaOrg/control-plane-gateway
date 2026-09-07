@@ -24,7 +24,7 @@
 - **Services running:** `litellm` (port 4000), `postgres` (5432), `picker-shim` (nginx, port 4001).
 - **Path:** Claude Code → `localhost:4000/v1/messages` → key/model/budget checks → real provider key swapped in → Anthropic, OpenRouter, Groq, z.ai, or a local Ollama model → response streamed back → capture callback writes to disk + PostgreSQL.
 - **Client configuration is two environment variables** — `ANTHROPIC_BASE_URL` and `ANTHROPIC_AUTH_TOKEN`. Nothing is patched, reverse-engineered, or MITM'd.
-- **Custom code we wrote:** `custom_capture.py` (capture callback), `verify.py` (capture scorecard), `verify_modify.py` (modification scorecard), `verify_routing.py` (route-override and model-attribution scorecard), `run_checks.py` (16-point fidelity harness), `stub/stub_upstream.py` (fake provider), `capture-tap/tap.py` (alternative byte-level tap), `claude-gw.sh` (launcher), `picker-shim/nginx.conf`.
+- **Custom code we wrote:** `custom_capture.py` (capture callback), `verify.py` (capture scorecard), `verify_modify.py` (modification scorecard), `verify_routing.py` (route-override and model-attribution scorecard), `verify_openai.py` (first-party OpenAI route scorecard), `run_checks.py` (16-point fidelity harness), `stub/stub_upstream.py` (fake provider), `capture-tap/tap.py` (alternative byte-level tap), `claude-gw.sh` (launcher), `picker-shim/nginx.conf`.
 - **Deliberate configuration choice:** `drop_params: false` globally, so LiteLLM never silently discards request fields it does not recognise — the worst failure mode for a capture gateway.
 
 ### Credential model (the core security idea)
@@ -109,7 +109,7 @@ The five capabilities the PoC was asked to explore. **All five are complete and 
 - **How:** **no code was written.** LiteLLM already exposes an Anthropic-format `/v1/messages` endpoint that translates to any provider it supports, and Claude Code already talks to whatever `ANTHROPIC_BASE_URL` points at. The whole change was `model_list` entries in `config.yaml` plus one environment variable. Provider: **OpenRouter** (one key reaches Google, DeepSeek, MiniMax, NVIDIA and others), with Groq entries alongside, plus first-party routes to z.ai (§3.6) and a local Ollama model.
 - **How it was proven:** a real `claude` CLI session ran against a free NVIDIA Nemotron route, was asked to read a file with its Read tool, and returned the file's contents. Claude Code → gateway → OpenRouter → NVIDIA → back, with a tool round-trip in the middle.
 - **Status / findings:**
-  - **34 model routes registered** — 4 Anthropic, 15 honest provider aliases, 15 Claude-shaped picker aliases.
+  - **38 model routes registered** — 4 Anthropic passthroughs, 17 honest provider aliases, 17 Claude-shaped picker aliases (one twin each). Re-counted from `GET /v1/models` on 7 Sep 2026; the figure grows with every route added, so trust the endpoint over this line.
   - **Tool calling survives translation** — the most likely thing to break. The streamed response is a correct Anthropic SSE sequence (`content_block_start` with `tool_use`, `input_json_delta`, `stop_reason: "tool_use"`).
   - **Costing is exact to the last digit.** LiteLLM billed $0.000263625; OpenRouter's own API independently reported $0.000263625 — so budget enforcement on these routes is trustworthy.
   - **Capture, attribution and budgets behave identically** regardless of which provider served the request. **This is the argument for doing this at the gateway rather than with per-developer tooling** like claude-code-router, which has no central budget or audit trail.
@@ -249,6 +249,92 @@ docker exec litellm-gateway-litellm-1 python -c \
 
 - **Reference:** `NON-ANTHROPIC-MODELS.md` for the full route table; `config.yaml` for the per-entry rationale.
 
+### 3.7 OpenAI as a first-party provider route — ✅ **Done, verified end to end 7 Sep 2026**
+
+- **Why:** every OpenAI-branded route on this gateway until now was indirect — `gemini-3.7-flash` and friends go through **OpenRouter**, and `groq-gpt-oss-*` are OpenAI's *open-weight* models served by **Groq** with no OpenAI account involved. Nothing had ever called OpenAI itself. This item closes that gap and re-tests the §3.6 claim that a new first-party vendor costs no engineering work.
+- **How:** **no code.** Two `model_list` entries in `config.yaml` — the honest `openai-gpt-41-nano` and the picker alias `claude-haiku-4-5-oai-41n`, both pointing at the same upstream — one label rewrite in `picker-shim/nginx.conf`, and one environment variable (`OPENAI_API_KEY`) in `docker-compose.yml`, optional (`:-`, not `:?`) so an Anthropic-only setup still boots. LiteLLM's native `openai` provider resolves to `https://api.openai.com/v1` with no custom `api_base`. `verify_openai.py` is a test, not gateway code.
+
+#### The registered route
+
+| Honest alias | Model | Input | Output | Context | Max output |
+|---|---|---|---|---|---|
+| `openai-gpt-41-nano` | `openai/gpt-4.1-nano` | **$0.10 / 1M** | **$0.40 / 1M** | 1,047,576 | 32,768 |
+
+A picker alias exists too, so the route is reachable from the desktop app and not
+only from the CLI:
+
+| Picker alias | Shown in the picker as |
+|---|---|
+| `claude-haiku-4-5-oai-41n` | GPT-4.1 nano (gateway) |
+
+The alias name is vendor-free **because it has to be**: the desktop app's DENY
+regex vetoes any model id containing `openai` or `gpt`, and the veto is evaluated
+before the `claude` prefix is considered. The honest `openai-gpt-41-nano` trips it
+twice and can never appear in the picker. Do not "clarify" `oai-41n` back to
+something readable — it would vanish from the picker silently, with no error
+anywhere.
+
+**Why `gpt-4.1-nano` and not the cheaper `gpt-5-nano`.** Prices confirmed 7 Sep 2026 against [OpenAI's pricing page](https://developers.openai.com/api/docs/pricing) *and*, independently, LiteLLM's own built-in cost map:
+
+| Model | Input / 1M | Output / 1M | Note |
+|---|---|---|---|
+| `gpt-5-nano` | **$0.05** | $0.40 | Cheapest chat model OpenAI sells |
+| `gpt-4.1-nano` | $0.10 | $0.40 | **Chosen** |
+| `gpt-4o-mini` | $0.15 | $0.60 | — |
+
+At smoke-test volume the saving is about **$0.0015 per thousand calls**, so price is a rounding error and the tie-breaker is *failure modes*. `gpt-5-nano` is a reasoning model: it rejects `max_tokens` (wants `max_completion_tokens`), rejects a non-default `temperature`, and bills invisible reasoning tokens as output. Each is an HTTP `400` indistinguishable at a glance from a bad key or a wrong provider prefix — **the exact ambiguity a connectivity test exists to remove**, and the same trap the guessed Anthropic dated model IDs set in §3.2. `gpt-5-nano` is the right choice for volume *after* the path is known good; register it as a **second** entry then, with the params it actually wants.
+
+> **Note on `drop_params`.** This entry now carries `drop_params: true` (see the findings below), which would blunt some of that argument if the choice were being made today — dropped params do not 400. It does not blunt all of it: dropping `max_tokens` for a reasoning model means the call silently loses its output ceiling rather than erroring, and the reasoning-token billing is unaffected either way. The plain chat model remains the right thing to prove a path with.
+
+#### Verified end to end
+
+`verify_openai.py`, run inside the container against the live gateway, `max_tokens: 16`, prompt *"Reply with exactly: OK"*. **4/4 pass:**
+
+| Check | Result |
+|---|---|
+| Route registered — `GET /v1/models` | ✅ advertised among **38** routes |
+| Cost map populated (not a silent `$0`) | ✅ in **$0.10 / 1M**, out **$0.40 / 1M** |
+| `POST /v1/chat/completions` | ✅ **`200`** — `text='OK'`, in 12 / out 1, cost $0.0000016 |
+| `POST /v1/messages` (what Claude Code sends) | ✅ **`200`** — `text='OK'`, in 12 / out 2, cost $0.0000020 |
+
+Separately, the **picker alias** was probed with an Anthropic `thinking` block attached, which is what the desktop app actually sends: `claude-haiku-4-5-oai-41n` → **`200`**, with and without the block. Real content, real token usage, real billed cost on every one of these.
+
+##### It did not start out working, and the history is the useful part
+
+Earlier the same day this route returned **`429` `insufficient_quota`** — *"You have no credits remaining."* — on every call, against a credit-less account. Two things came out of that, both worth keeping:
+
+- **The `429` was positive evidence, not a dead end.** OpenAI returns `401` for a bad key and `404` for an unknown model id. We got neither, and `credit_balance_exhausted` is *account-specific* — OpenAI had identified the account before refusing it. So the path resolved and authenticated at a point when no completion had yet come back. (See the findings below for why `verify_openai.py` encodes that split.)
+- **⚠ A restart is not enough to change the key.** `docker compose restart litellm` reuses the container's existing environment, so an edited `OPENAI_API_KEY` in `.env` does not take effect and every call keeps `429`ing *exactly as before* — which reads as the new key being bad too. This cost real time. Use `docker compose up -d litellm`, which recreates the container. To tell a stale container from a bad key without printing a secret, compare `sha256` fingerprints of the `.env` value and `docker compose exec -T litellm printenv OPENAI_API_KEY`.
+
+#### Status / findings
+
+- **§3.6's rule was respected in the end, not broken.** The z.ai section says *"a route that answers every call with 'Insufficient balance' reads as a broken gateway"*, which is why paid z.ai models were left unregistered. This route was briefly the counter-example — registered while `429`ing — and the resolution was to **fund the account**, not to argue for the exception. The rule stands: do not leave a route registered, failing and unexplained.
+- **A billing failure is a diagnostic, not just an error.** `401` / `404` / `429` divide the failure space cleanly into *our key*, *our config* and *their balance*. `verify_openai.py` prints which of the three it is, so the next person does not re-debug the gateway over an empty wallet — the same class of legibility problem as gap #5.
+- **The pricing claim is cross-verified.** LiteLLM's cost map and OpenAI's published page agree to the digit ($0.10 / $0.40 per 1M), so `max_budget` enforcement and spend attribution on this route are trustworthy with no hand-pinned `model_info` — unlike the OpenRouter entries (gap #4). Confirmed against live traffic: the verifier's own calls priced out at $0.0000016 and $0.0000020.
+- **The output clamp applies here deliberately.** Neither `openai-gpt-41-nano` nor `claude-haiku-4-5-oai-41n` is in `GATEWAY_CLAMP_EXEMPT_MODELS`, so Claude Code's 32,000-token reservation is clamped to 8,000. That is wanted: providers gate on the *reservation*, and a low-balance account `402`s on requests that would have spent 60 tokens — the precise failure documented for OpenRouter above. 8,000 sits well under this model's 32,768 ceiling, so nothing truncates. It matters more on the picker alias than on the CLI, since the desktop app has no `CLAUDE_CODE_MAX_OUTPUT_TOKENS` of its own.
+- **⚠ `drop_params: true` turned out to be mandatory on both entries** — it was missing at first and the picker route failed hard because of it. The desktop app sends an Anthropic `thinking` block on every `/v1/messages` call; LiteLLM translates it for an OpenAI-shaped upstream, and `gpt-4.1-nano` — a plain chat model, not a reasoning one — answers `400 Unsupported parameter: 'reasoning.effort' is not supported with this model`. Under the global `drop_params: false` that reaches the user verbatim and reads like a broken gateway or a bad key, when nothing is wrong except a param the client cannot be told to stop sending. `drop_params` alone covers the translated `reasoning_effort`; `additional_drop_params: ["thinking", "reasoning", "reasoning_effort"]` also covers the newer nested `reasoning` block and the raw `thinking` passthrough, so the same `400` cannot return under a different spelling. This is gap #7 (silent degradation on non-Anthropic routes) applying to a first-party route as well.
+- **The key is a standard project key.** `OPENAI_API_KEY` resolves to a 164-character value beginning with `sk-`. *(An earlier reading of 186 characters with no `sk-` prefix described the credit-less key that has since been replaced.)*
+
+#### Reproducing
+
+```bash
+# the four-check verifier — run it inside the container, where both
+# LITELLM_MASTER_KEY and OPENAI_API_KEY already live, so no secret is pasted
+docker compose exec -T litellm python - < verify_openai.py
+
+# what LiteLLM resolves the provider and upstream URL to
+docker exec litellm-gateway-litellm-1 python -c \
+  "import litellm; p = litellm.get_llm_provider('openai/gpt-4.1-nano'); print(p[1], p[3])"
+#   openai None
+#
+# NOTE the `None`, and contrast it with the z.ai command in 3.6, which returns an
+# explicit `https://api.z.ai/api/paas/v4`. For OpenAI LiteLLM sets no api_base at
+# all and lets the OpenAI SDK apply its own default of https://api.openai.com/v1.
+# `None` here is correct and is NOT a missing-configuration symptom.
+```
+
+- **Reference:** `NON-ANTHROPIC-MODELS.md` for the route table; `config.yaml` for the per-entry rationale; `verify_openai.py` for the check itself.
+
 ### Summary
 
 | # | Action item | Status | Effort to complete |
@@ -259,6 +345,7 @@ docker exec litellm-gateway-litellm-1 python -c \
 | 4 | Non-Anthropic model translation | ✅ Done, verified end to end | — (unsupported by Anthropic; treat as PoC extra) |
 | 5 | Skill files into Claude Code | ✅ Done, verified | Re-point source at the real repo after merge |
 | 6 | z.ai as a first-party provider route | ✅ Done, verified | **Configure `fallbacks` between the two free routes** (the free tier rate-limits in practice); fund the account to unlock paid tiers |
+| 7 | OpenAI as a first-party provider route | ✅ Done, verified end to end (`verify_openai.py` 4/4, both request shapes `200`) | — (account funded 7 Sep 2026; `gpt-5-nano` can be added as a cheaper second entry when volume justifies it) |
 
 ---
 
@@ -313,6 +400,8 @@ docker exec litellm-gateway-litellm-1 python -c \
 | 8 | **Anthropic does not support routing Claude Code to non-Claude models** through any gateway | Every breaking Claude Code release is ours to absorb | Record as an ongoing risk, not a solved problem |
 | 9 | **Desktop app still sends background traffic to Anthropic** | Selecting a free model does not make a session free, and does not keep prompts off Anthropic | Measured from spend logs. A knob exists to capture that slot; left off deliberately |
 | 10 | **Skill activation is not deterministic** | Distribution is reliable; whether a session *uses* a published skill is the model's choice. Sonnet auto-loaded it, Haiku did not | Skills are advisory guidance, **not a control** — important for any compliance framing |
+| 11 | **A registered route on an unfunded account `429`s on every call** | Reads as an outage rather than an empty wallet — the same legibility problem as #5, and the reason paid z.ai models were left unregistered | **Closed 7 Sep 2026** by funding the OpenAI account; `openai-gpt-41-nano` now answers (§3.7). Remains a live constraint for any *future* route: do not register one before funding it. `verify_openai.py` distinguishes `401` / `404` / `429` so the cause is named, not guessed |
+| 12 | **Editing a key in `.env` does not reach a running container** | `docker compose restart` reuses the existing environment, so the old key keeps answering and the failure is unchanged — indistinguishable from the new key also being bad. Cost real debugging time on the OpenAI route | Use `docker compose up -d <service>`, which recreates the container. Compare `sha256` fingerprints of `.env` and `printenv` to confirm, without printing the secret |
 
 ---
 
@@ -336,10 +425,11 @@ docker exec litellm-gateway-litellm-1 python -c \
 
 | Area | Artefact | State |
 |---|---|---|
-| Gateway stack | `litellm-gateway/docker-compose.yml`, `config.yaml` | Running; 34 model routes |
+| Gateway stack | `litellm-gateway/docker-compose.yml`, `config.yaml` | Running; **37** model routes (measured from `GET /v1/models`, 7 Sep 2026) |
 | Capture | `custom_capture.py` | Working; writes plain JSON + `index.jsonl` |
 | Verification | `run_checks.py` (16 checks), `verify.py`, `stub/stub_upstream.py` | 15/16 pass, zero-cost |
-| Route override + attribution | `custom_capture.py`, `verify_routing.py` (23 checks) | Working; verified live 4 Sep 2026 — selected Haiku, served by `ollama_chat/qwen3:8b`, logged as `ollama_chat/qwen3:8b` in both the capture and the LiteLLM dashboard's spend logs. See [`GATEWAY-MODIFY.md`](GATEWAY-MODIFY.md) behaviour 0 |
+| First-party OpenAI route | `config.yaml` (`openai-gpt-41-nano` + picker alias `claude-haiku-4-5-oai-41n`), `verify_openai.py` (4 checks) | **4/4 pass** — both request shapes `200` with real usage and cost; picker alias also `200` with a `thinking` block attached (§3.7) |
+| Route override + attribution | `custom_capture.py`, `verify_routing.py` (24 checks) | Working; verified live 4 Sep 2026 — selected Haiku, served by `ollama_chat/qwen3:8b`, logged as `ollama_chat/qwen3:8b` in both the capture and the LiteLLM dashboard's spend logs. See [`GATEWAY-MODIFY.md`](GATEWAY-MODIFY.md) behaviour 0 |
 | Byte-faithful alternative | `capture-tap/tap.py`, `export_captures.py` | Demonstrated on real traffic |
 | Desktop model picker | `picker-shim/nginx.conf` | Working on port 4001 |
 | Developer launcher | `claude-gw.sh` | Validates the key before launching, so failures are legible |
