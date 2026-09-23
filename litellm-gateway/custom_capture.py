@@ -684,10 +684,23 @@ def _skill_is_installed(name: str, haystack: str) -> bool:
     can make injection an activation aid for people who opted in rather than a
     standard imposed on people who did not.
 
-    Anchored on the leading `- ` and the trailing `:` so a developer merely
-    *mentioning* the skill by name in a question does not read as installation.
+    Anchored on the leading `- ` so a developer merely *mentioning* the skill
+    by name in a question does not read as installation.
+
+    The trailing `:` is OPTIONAL, and that is load-bearing. A plugin installed
+    in the current session is advertised by NAME ONLY until its SKILL.md
+    metadata is indexed — the "Restart to apply changes" window:
+
+        - emumba-react:react-best-practices: Comprehensive React and Next.js …
+        - emumba-backend:node-express-service
+
+    Requiring the colon made those installs invisible here, so injection was
+    skipped for exactly the developer who had just opted in — and it failed
+    silently, looking identical to a trigger that did not match. Observed
+    15 Sep 2026 on a real session. End-of-line is accepted instead; a bare
+    name alone on a list line is still specific enough not to fire on prose.
     """
-    return re.search(r"^[ \t]*-[ \t]+" + re.escape(name) + r"\s*:",
+    return re.search(r"^[ \t]*-[ \t]+" + re.escape(name) + r"[ \t]*(?::|$)",
                      haystack, re.MULTILINE) is not None
 
 
