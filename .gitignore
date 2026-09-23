@@ -45,17 +45,22 @@ Emumba_PoC_Enterprise_Control_Plane.html
 # source of truth; regenerate the deck when you need to hand one out.
 Emumba_PoC_Status_Report.html
 #
-# NOT the same category, and deliberately NOT ignored:
-# Emumba_PoC_Flows_What_How.html is tracked on purpose. It holds the flow
-# diagrams for every capability, and it is now the only place they live — the
-# standalone .svg and .png exports were removed rather than kept in parallel,
-# because three copies of one diagram drift faster than two. Losing it would
-# lose the diagrams, which is not true of the status deck above.
+# Same category, and ignored for the same reason: the condensed flows deck. It
+# is derived from the status report above — its own header names that file as
+# its source — so versioning it would keep two copies of the same claims in the
+# repo and guarantee they drift, which is the exact failure this rule exists to
+# prevent. Both decks are hand-outs, distributed by hand.
 #
-# The cost of that choice, so nobody is surprised by it: it is a binary-ish
-# artefact in review, and it restates claims that also live in docs/. When a
-# flow changes, update it in the same commit as the code — it is documentation
-# now, not a hand-out.
+# NOTE: this file was briefly tracked (e924d26) on the reasoning that it was the
+# last home of the flow diagrams after the .svg and .png exports were deleted.
+# That was the wrong trade: the fix for "the diagrams live in only one place" is
+# to keep a diffable source, not to version a 130 KB rendered artefact. The
+# Mermaid source in docs/skills-flow.md stays tracked and is where a flow should
+# be edited; regenerate the deck when you need to hand one out.
+#
+# Being tracked already, ignoring it is not enough on its own — it was untracked
+# with `git rm --cached` in the same commit that added this rule.
+Emumba_PoC_Flows_What_How.html
 
 # ---------------------------------------------------------------------------
 # Local / OS noise
