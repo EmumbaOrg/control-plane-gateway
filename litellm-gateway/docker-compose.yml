@@ -117,8 +117,17 @@ services:
       - ./capture:/app/capture
       # The injectable skills, mounted from the plugin the marketplace serves —
       # the same SKILL.md, not a copy, so the two delivery paths cannot drift.
+      #
+      # One directory per PLUGIN under /app/skills, because a single flat mount
+      # can only ever serve one plugin: the second `:/app/skills` would shadow
+      # the first and the skills it replaced would silently stop injecting.
+      # Nesting also makes the manifest path mirror the skill's own namespaced
+      # name — /app/skills/emumba-backend/rest-api-conventions/SKILL.md for
+      # emumba-backend:rest-api-conventions — so a wrong path is visible on
+      # sight. Adding a plugin is one more line here plus its manifest entries.
       - ./skills-inject.json:/app/skills-inject.json:ro
-      - ../plugins/emumba-react/skills:/app/skills:ro
+      - ../plugins/emumba-react/skills:/app/skills/emumba-react:ro
+      - ../plugins/emumba-backend/skills:/app/skills/emumba-backend:ro
     command: ["--config", "/app/config.yaml"]
 
   # Model-picker shim for the Claude Code desktop app. Rewrites GET /v1/models

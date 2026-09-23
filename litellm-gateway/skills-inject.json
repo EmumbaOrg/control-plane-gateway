@@ -15,8 +15,23 @@
   "skills": [
     {
       "name": "emumba-react:react-best-practices",
-      "path": "/app/skills/react-best-practices/SKILL.md",
+      "path": "/app/skills/emumba-react/react-best-practices/SKILL.md",
       "trigger": "\\buse(?:Effect|State|Memo|Callback|Ref|Reducer|Context|Transition)\\s*\\(|\\.[jt]sx\\b|use client|\\breact\\b|\\bnext\\.js\\b|\\bjsx\\b|next/(?:link|image|dynamic|navigation)"
+    },
+    {
+      "name": "emumba-backend:rest-api-conventions",
+      "path": "/app/skills/emumba-backend/rest-api-conventions/SKILL.md",
+      "trigger": "\\bres\\.(?:status|json|send)\\s*\\(|\\b(?:app|router)\\.(?:get|post|put|patch|delete)\\s*\\(|@(?:Get|Post|Put|Patch|Delete)Mapping|\\bREST(?:ful)?\\b|\\bendpoints?\\b|\\bHTTP\\s*(?:status|code)|\\bpagination\\b|\\bidempoten|\\b(?:400|401|403|404|409|422|429)\\b"
+    },
+    {
+      "name": "emumba-backend:spring-boot-service",
+      "path": "/app/skills/emumba-backend/spring-boot-service/SKILL.md",
+      "trigger": "@(?:RestController|Controller|Service|Repository|Transactional|Autowired|Entity|ConfigurationProperties|SpringBootTest|WebMvcTest)\\b|\\borg\\.springframework\\b|\\bspring\\s*boot\\b|\\.java\\b|\\.kt\\b|\\bJPA\\b|\\bhibernate\\b|\\bapplication(?:-\\w+)?\\.yml\\b|\\bflyway\\b|\\bliquibase\\b"
+    },
+    {
+      "name": "emumba-backend:node-express-service",
+      "path": "/app/skills/emumba-backend/node-express-service/SKILL.md",
+      "trigger": "require\\s*\\(\\s*['\"]express|from\\s+['\"]express|\\bexpress\\s*\\(\\s*\\)|\\bapp\\.use\\s*\\(|\\breq\\.(?:body|params|query|headers)\\b|\\bnext\\s*\\(\\s*err|\\bmiddleware\\b|\\bnode\\.js\\b|\\bnodemon\\b|\\bpackage\\.json\\b|\\bSIGTERM\\b"
     }
   ]
 }

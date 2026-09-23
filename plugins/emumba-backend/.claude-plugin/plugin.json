@@ -1,0 +1,9 @@
+{
+  "name": "emumba-backend",
+  "version": "0.1.0",
+  "description": "Backend engineering skills for Emumba, spanning multiple server stacks. Distributed through the Emumba backend marketplace.",
+  "author": {
+    "name": "Emumba"
+  },
+  "keywords": ["backend", "api", "rest", "spring-boot", "node", "express", "emumba"]
+}

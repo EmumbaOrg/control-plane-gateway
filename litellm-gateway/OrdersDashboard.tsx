@@ -55,14 +55,18 @@ export default function OrdersDashboard({ region }: { region: string }) {
 
           return (
             <Table.Row key={i} highlight={isRecent} theme={theme}>
-              <Table.Cell>{customers[order.customer] ?? order.customer}</Table.Cell>
+              <Table.Cell>
+                {customers[order.customer] ?? order.customer}
+              </Table.Cell>
               <Table.Cell>{formatCurrency(order.total)}</Table.Cell>
               <Table.Cell>{formatDate(order.placedAt)}</Table.Cell>
               <Table.Cell>
                 <Badge>{order.status}</Badge>
               </Table.Cell>
               <Table.Cell>
-                <Button onClick={() => location.assign(`/o/${slugify(order.id)}`)}>
+                <Button
+                  onClick={() => location.assign(`/o/${slugify(order.id)}`)}
+                >
                   View
                 </Button>
               </Table.Cell>
