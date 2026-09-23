@@ -439,10 +439,33 @@ document said it was. Each entry is a markdown list item:
 ```
 
 So the request itself carries the answer; no gateway-side registry of who has
-what, and nothing to keep in sync. Detection anchors on the leading `- ` and the
-trailing `:`, so a developer *mentioning* the skill by name — "do we have
+what, and nothing to keep in sync. Detection anchors on the leading `- `, so a
+developer *mentioning* the skill by name — "do we have
 `emumba-react:react-best-practices`?" — does not read as having it installed.
 Covered by a test case.
+
+**The trailing `:` is optional, and that is load-bearing — fixed 15 Sep 2026.**
+A plugin installed in the *current* session is advertised by **name only** until
+its `SKILL.md` metadata is indexed — the "Restart to apply changes" window:
+
+```
+- emumba-react:react-best-practices: Comprehensive React and Next.js performance…
+- emumba-backend:node-express-service
+```
+
+Requiring the colon made those installs invisible, so injection was skipped for
+**exactly the developer who had just opted in** — and it failed silently, looking
+identical to a trigger that did not match. End-of-line is now accepted too; a
+bare name alone on a list line is still specific enough not to fire on prose.
+
+#### The catalogue must not be matched against triggers
+
+This is the other half of the same surface, and getting it wrong shipped a bug —
+see [Triggers, and the catalogue trap](#triggers-and-the-catalogue-trap) below.
+The installed-check reads the **full** conversation text, catalogue included,
+because the catalogue is exactly what it needs. Trigger matching reads the same
+text with every `<system-reminder>` block **stripped out**. The two checks
+deliberately disagree about what they can see.
 
 The consequence worth stating: this is a **client-supplied** signal. In `always`
 mode that does not matter, but in `installed` mode a client could in principle
@@ -468,29 +491,101 @@ Audit lines from the two passing runs:
  "changes":{"skills_injected":{"emumba-react:react-best-practices":6885}}}
 ```
 
+**Note the shape of that evidence, because it is the only shape that works.** It
+is an **A/B on the output** — the same request with injection off and on, judged
+on whether the answer cites the skill's specific rules. It is deliberately *not*
+the model's own account of what it used.
+
+Asking cannot establish this:
+
+- **`check_skill_usage.py` is blind to injection by construction.** It reads
+  Claude Code's per-skill counter, which increments when the model calls the
+  `Skill` tool. An injected skill never passes through that tool, so the counter
+  correctly stays at **zero** while the standard is in fact applied. It measures
+  the marketplace path, and only that.
+- **A `SKILL_USED=` line is unreliable in both directions.** Weaker models
+  receive injected guidance as ordinary system text and then deny using any
+  skill; they will equally claim one they never loaded.
+- **Injected blocks now instruct the model to name the skill when asked**, which
+  was added to fix the denial half of that problem. It does fix it — and it makes
+  the self-report **self-fulfilling for the injection path.** Useful in a demo;
+  not independent evidence. The runs above predate that instruction.
+
 ### The manifest — one source of truth, two delivery paths
 
 `skills-inject.json` lists what to inject and what makes each entry relevant:
 
 ```json
-{"skills": [{
-  "name": "emumba-react:react-best-practices",
-  "path": "/app/skills/react-best-practices/SKILL.md",
-  "trigger": "\\buse(?:Effect|State|Memo|…)\\s*\\(|\\.[jt]sx\\b|\\breact\\b|…"
-}]}
+{"skills": [
+  {"name": "emumba-react:react-best-practices",
+   "path": "/app/skills/emumba-react/react-best-practices/SKILL.md",
+   "trigger": "\\buse(?:Effect|State|Memo|…)\\s*\\(|\\.[jt]sx\\b|\\breact\\b|…"},
+  {"name": "emumba-backend:node-express-service",
+   "path": "/app/skills/emumba-backend/node-express-service/SKILL.md",
+   "trigger": "from\\s+['\"]express|\\breq\\.(?:body|params|query)\\b|…"}
+]}
 ```
 
-`path` points at **the same `SKILL.md` the marketplace distributes**, mounted
-read-only from `../plugins/emumba-react/skills`. Not a copy — a copy would drift,
-and the two delivery paths would then teach different things.
+**Four skills across two plugins** are wired today: `emumba-react`
+(`react-best-practices`) and `emumba-backend` (`rest-api-conventions`,
+`spring-boot-service`, `node-express-service`).
 
-A manifest rather than hardcoded paths so adding the second skill is a data
-change, not a code change. Frontmatter is stripped before injection: it is Claude
-Code's *registration* metadata, and injected as context it reads as an
-instruction to load a skill that is already present.
+`path` points at **the same `SKILL.md` the marketplace distributes** — not a
+copy, because a copy would drift and the two delivery paths would then teach
+different things. Each plugin is mounted read-only under its own directory:
 
-The trigger is **deliberately generous** — a false positive costs a few thousand
-tokens of irrelevant guidance, a false negative costs the entire point.
+```
+../plugins/emumba-react/skills:/app/skills/emumba-react:ro
+../plugins/emumba-backend/skills:/app/skills/emumba-backend:ro
+```
+
+**One mount per plugin, not one shared mount.** A single flat `:/app/skills` can
+only ever serve one plugin: the second such line shadows the first, and the
+skills it replaced stop injecting **silently**. Nesting also makes the manifest
+path mirror the skill's namespaced name, so a wrong path is visible on sight.
+
+A manifest rather than hardcoded paths, so adding a skill is a data change, not a
+code change — adding the fourth required no edit to `custom_capture.py`.
+Frontmatter is stripped before injection: it is Claude Code's *registration*
+metadata, and injected as context it reads as an instruction to load a skill that
+is already present.
+
+<a id="triggers-and-the-catalogue-trap"></a>
+
+#### Triggers, and the catalogue trap
+
+An earlier version of this document said the trigger is *"deliberately generous —
+a false positive costs a few thousand tokens of irrelevant guidance, a false
+negative costs the entire point."* **That reasoning is what let a real bug hide
+for two weeks, and it is retracted.** A false positive is not a few thousand
+tokens of rounding error; at four skills it was measured at **17,683
+characters**, and the cost scales with the catalogue while the benefit does not.
+
+The mechanism: Claude Code advertises installed skills in a `<system-reminder>`,
+one line each **including the description** — and a description contains the very
+words its own trigger matches.
+
+```
+- emumba-backend:spring-boot-service: Spring Boot service structure for Emumba…
+                                      ^^^^^^^^^^^ matches \bspring\s*boot\b
+```
+
+With the catalogue in scope, **every installed skill injected into every request
+regardless of topic.** Measured 15 Sep 2026 on a pure Express file: it pulled in
+React *and* Spring Boot alongside the two that belonged.
+
+**The bug was undetectable while one skill was configured.** A lone skill
+re-triggering off its own catalogue entry is indistinguishable from working, and
+`verify_modify.py` was green throughout. It surfaced only at four.
+
+Fixed by stripping `<system-reminder>` blocks before trigger matching, while the
+installed-check keeps the full text. Covered by a regression check that was
+confirmed to fail against the original code.
+
+**So: keep each trigger scoped to its own topic, and never widen one to
+compensate for a missed activation.** A trigger decides whose prompts get
+rewritten, which makes it a policy statement rather than a tuning knob — the same
+standing the `GATEWAY_ROUTE_RULES` keywords already have.
 
 ### Injection is appended, never inserted — this is load-bearing
 
@@ -510,14 +605,21 @@ the prompt without bound. Also covered by a test case.
 
 ### What this costs, stated plainly
 
-- **~1,800 tokens of input on every in-scope request**, uncached, per skill. On a
-  translated route prompt caching is gone anyway (see `NON-ANTHROPIC-MODELS.md`),
-  so it is paid in full there.
-- **Developers are not told their prompt was modified.** Someone gets React
-  performance guidance they did not ask for and cannot see why. This is the same
-  open concern redaction has, and injection makes it more visible rather than
-  less — which is arguably an improvement, since the injected block says who
-  attached it.
+- **~1,800 tokens of input on every in-scope request**, uncached, **per skill.**
+  With four skills configured, the ceiling matters more than the typical case:
+  `GATEWAY_INJECT_MAX_CHARS` caps each skill at 20,000 characters, so a request
+  matching all four can carry ~80,000 characters of standard. That is the
+  number to sanity-check when adding a skill, not the ~1,800 average. On a
+  translated route prompt caching is gone anyway (see
+  `NON-ANTHROPIC-MODELS.md`), so it is paid in full there.
+- **Cost scales with the catalogue; relevance does not.** Each skill added
+  widens the set of conversations that carry *some* injected standard. This is
+  the economic half of the catalogue trap above — the reason trigger scope is
+  worth guarding even now that the self-trigger bug is fixed.
+- **Developers are not told their prompt was modified.** Someone gets guidance
+  they did not ask for and cannot see why. This is the same open concern
+  redaction has, and injection makes it more visible rather than less — which is
+  arguably an improvement, since the injected block says who attached it.
 - **It applies to Anthropic models too, where native activation already works.**
   That is deliberate: a guarantee that holds only on some routes is not a
   guarantee. `GATEWAY_INJECT_SKILL_MODELS` narrows it if you want the tokens
@@ -570,17 +672,31 @@ Three levels, cheapest first.
 python3 verify_modify.py
 ```
 
-20 checks over `_modify()` with Claude-Code-shaped bodies. Exit code 0 or 2, so it
+21 checks over `_modify()` with Claude-Code-shaped bodies. Exit code 0 or 2, so it
 can gate a commit. It forces its own configuration, so the result does not depend
 on what is currently exported in your shell. The injection checks load the **real**
 manifest and the **real** `SKILL.md`, with the container paths rewritten, so they
 test the shipped content rather than a fixture.
 
-It covers the three things most likely to be got wrong: that a **picker alias is
-still clamped** (the prefix trap), that redaction is **deterministic**, and that
+It covers the four things most likely to be got wrong: that a **picker alias is
+still clamped** (the prefix trap), that redaction is **deterministic**, that
 injection is **idempotent and appended after the cache breakpoint** — the two
-ways it could silently destroy prompt caching or grow a prompt without bound. It
-does *not* prove the proxy calls the hook — that is level 2.
+ways it could silently destroy prompt caching or grow a prompt without bound —
+and that **the skill catalogue does not trigger unrelated skills**, which is the
+regression for the bug described above. It does *not* prove the proxy calls the
+hook — that is level 2.
+
+**Two caveats about this suite, both learned the hard way.** It was green for two
+weeks while the catalogue bug was live, because it exercised one skill and a
+single skill re-triggering off its own catalogue entry looks identical to
+success; the regression check therefore needs **at least two** skills in the
+manifest to mean anything. And on 22 Sep 2026 the harness itself was found broken
+by the per-plugin mount change — its container-to-repo path rewrite was a prefix
+swap, which stopped working once the `skills` segment moved, so every skill body
+resolved to a missing file and six checks reported `FAIL` for that rather than
+for anything they tested. It now exits loudly when a manifest entry does not
+resolve. **A suite that fails for the wrong reason is worse than one that does
+not run**, because the output still looks like a verdict.
 
 Behaviour 0 and the attribution it forces have their own suite, because the
 property under test is different — it spans both hooks:

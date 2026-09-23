@@ -14,12 +14,17 @@ then settles the adopt / hybrid / build decision.
 | File | What it is |
 |---|---|
 | `gateway-up.sh` | **Start everything with one command** — compose stack *and* the host-side Ollama the local routes need. `--status` to report, `--no-local` to skip Ollama |
-| `docker-compose.yml` | LiteLLM proxy + Postgres |
+| `claude-gw.sh` | **Launch Claude Code against the gateway.** Validates the virtual key first, so a credential problem reports itself instead of arriving as an opaque 401 |
+| `.env` | Server boot config: provider keys and the master key. Gitignored |
+| `.vkey` | The virtual key you call as. Read from here and nowhere else. Gitignored |
+| `docker-compose.yml` | LiteLLM proxy + Postgres. Also the authoritative list of every environment variable, each documented next to the code that reads it |
+| `picker-shim/` | nginx on port 4001, rewriting `GET /v1/models` so the desktop app's model picker shows non-Anthropic routes |
 | `config.yaml` | Models, master key, DB, and the capture callback wiring |
 | `custom_capture.py` | The capture itself, plus a raw-payload dump for the first few calls |
 | `verify.py` | Scorecard over the capture directory |
 | `capture/` | Output. `<session-id>/*.json.gz`, `index.jsonl`, `_kwargs/` |
-| `skills-inject.json` | Which skills the gateway injects into matching requests, and their triggers |
+| `skills-inject.json` | Which skills the gateway injects into matching requests, and their triggers. `path` values point into `/app/skills/<plugin>/<skill>/SKILL.md`, which is where `docker-compose.yml` mounts each plugin — **one mount per plugin**, because a second flat `:/app/skills` would shadow the first and its skills would silently stop injecting |
+| `check_skill_usage.py` | Counts whether the model actually *called* an installed skill. **Measures the marketplace path only** — it is blind to gateway injection by construction, so it correctly reads zero while an injected standard is in fact applied. Not sufficient evidence on its own; see `../docs/GATEWAY-MODIFY.md` |
 | `verify_modify.py` | Offline scorecard for the request-modification hook |
 | `verify_routing.py` | Offline scorecard for content-based route override, and for whether the captured model — in the capture *and* in the dashboard's spend logs — names the model that actually answered |
 
@@ -38,12 +43,25 @@ for the image tag you pull.** Key names move between releases:
 
 ## Prerequisites
 
-- Docker (installed)
+- Docker (installed), with Docker Desktop **running**.
 - An Anthropic **API key** from <https://platform.claude.com> with credit on it.
   This is a developer-platform account — **not** a claude.ai subscription, and
   upgrading claude.ai to Pro does not produce one.
 - The Claude Code **CLI** (`npm i -g @anthropic-ai/claude-code`, installed).
-  The desktop app cannot be pointed at a gateway with these variables.
+  The desktop app cannot be pointed at a gateway with these variables — it goes
+  through the picker shim on port 4001 instead.
+- **For the local routes only:** `ollama` installed, and the model pulled once
+  (~5 GB). `gateway-up.sh` starts and configures Ollama, but cannot install it
+  or pull for you:
+  ```bash
+  brew install ollama && ollama pull qwen3:8b
+  ```
+  Use `./gateway-up.sh --no-local` to skip this entirely.
+- A `.env` in this directory. `ANTHROPIC_API_KEY` and `LITELLM_MASTER_KEY` are
+  required; every other variable is optional and defaults sensibly. See the
+  environment block in `docker-compose.yml` for the full list.
+- A `.vkey` in this directory, holding one virtual key. Mint it once with
+  `/key/generate` (below) — it is not per-run.
 
 ---
 
@@ -120,8 +138,14 @@ descoped when planning to write our own gateway.
 
 ### Point Claude Code at it
 
+**To just run it, use `./claude-gw.sh` — it does all of the below and validates
+the key first.** What follows is the manual form, kept because the choice of
+base URL is one of the spike's open questions.
+
 Two candidate base URLs. **Which one works is the main question this spike
-answers**, so test both.
+answers**, so test both. Candidate A is what everything here runs on today;
+B is still untested — see [`../docs/FINDINGS.md`](../docs/FINDINGS.md), "The
+passthrough route is untested".
 
 ```bash
 # Candidate A — LiteLLM's native Messages endpoint

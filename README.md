@@ -10,9 +10,17 @@ server.
 | Path | Purpose |
 |---|---|
 | `litellm-gateway/` | LiteLLM proxy + PostgreSQL, with a custom capture callback |
-| `plugins/emumba-react/` | Skills plugin distributed to developers through the gateway |
+| `plugins/emumba-react/` | React / Next.js skills plugin, distributed to developers through the gateway |
+| `plugins/emumba-backend/` | Backend skills plugin — REST conventions, Spring Boot, Node/Express |
 | `capture-tap/` | A thin byte-level tap in the data path — the alternative approach |
 | `docs/` | Everything below |
+
+Each plugin under `plugins/` reaches the model by **two paths from one file**:
+developers install the plugin from the gateway's marketplace, *and* the gateway
+injects the same `SKILL.md` server-side when a request matches a trigger. The
+container mounts the plugin directories read-only rather than holding copies, so
+the two paths cannot drift. See
+[`docs/GATEWAY-MODIFY.md`](docs/GATEWAY-MODIFY.md).
 
 Start with [`docs/GATEWAY-OVERVIEW.md`](docs/GATEWAY-OVERVIEW.md) — what was built
 and why, in diagrams. Then [`docs/DEMO.md`](docs/DEMO.md) for configuration, usage,
@@ -27,26 +35,92 @@ and a walkthrough of a real captured session.
 | [`GATEWAY-MODIFY.md`](docs/GATEWAY-MODIFY.md) | Modifying requests in flight: output clamp, secret redaction, skill injection |
 | [`NON-ANTHROPIC-MODELS.md`](docs/NON-ANTHROPIC-MODELS.md) | Running Gemini / DeepSeek / GLM in Claude Code through this gateway |
 | [`limited_budget_per_dev.md`](docs/limited_budget_per_dev.md) | Setting a per-developer budget, and proving it stops spend |
+| [`OLLAMA-TRANSLATION.md`](docs/OLLAMA-TRANSLATION.md) | How an Anthropic-shaped request is translated for a local Ollama model |
 | [`FINDINGS.md`](docs/FINDINGS.md) | Fidelity results (15 of 16 checks) and the `anthropic-beta` root-cause analysis |
 | [`STUB.md`](docs/STUB.md) | Running the fidelity checks with no API key and no spend |
 
+`litellm-gateway/` has its own [`README.md`](litellm-gateway/README.md) covering
+the files in that directory, the boot troubleshooting, and the verification
+scripts.
+
 ## Running it
 
-Create `litellm-gateway/.env` with two variables:
-
-```
-ANTHROPIC_API_KEY=sk-ant-...      # real provider key — stays on the gateway host
-LITELLM_MASTER_KEY=...            # admin password for the proxy and its UI
-```
-
-Then:
+Everything below runs from `litellm-gateway/`, which is where the stack, the
+scripts and both key files live:
 
 ```bash
 cd litellm-gateway
-docker compose up -d
 ```
 
-Issue a developer a virtual key, scoped to a model and a budget:
+### 0. Prerequisites
+
+- **Docker Desktop**, running. The scripts check and say so if it is not.
+- An **Anthropic API key** from <https://platform.claude.com> with credit on it.
+  This is a developer-platform account — **not** a claude.ai subscription, and
+  upgrading claude.ai to Pro does not produce one.
+- The **Claude Code CLI**: `npm i -g @anthropic-ai/claude-code`.
+- **Only if you want the local private-model routes**: `ollama`, plus the model
+  pulled once (~5 GB). `gateway-up.sh` starts and configures Ollama itself, but
+  it cannot install it or pull for you:
+  ```bash
+  brew install ollama && ollama pull qwen3:8b
+  ```
+  Skip this and use `./gateway-up.sh --no-local` for a hosted-models-only run.
+
+### 1. Server configuration — `.env`
+
+Create `litellm-gateway/.env`. Two variables are required; the stack refuses to
+start without them.
+
+```
+ANTHROPIC_API_KEY=sk-ant-...      # real provider key — stays on the gateway host
+LITELLM_MASTER_KEY=sk-...         # admin password for the proxy and its UI
+```
+
+`LITELLM_MASTER_KEY` is not issued by anyone — choose a strong string. You need
+it to mint virtual keys and to sign in to the dashboard.
+
+Every other variable is **optional**, and an Anthropic-only setup boots fine
+with all of them absent. Add one only for the routes you want: `OPENROUTER_API_KEY`
+(the free-tier aggregator routes), `GROQ_API_KEY`, `OPENAI_API_KEY` (first-party,
+limited credit), `ZAI_API_KEY`, `OLLAMA_API_BASE`, and the `GATEWAY_*` behaviour
+knobs. `docker-compose.yml` is the authoritative list and documents each one
+next to the code that reads it.
+
+> `.env` is the **server's** boot config — the keys the gateway spends against.
+> It is not how you authenticate as a caller; that is `.vkey`, in step 3. Both
+> are gitignored, and neither may be committed.
+
+### 2. Start the stack
+
+```bash
+./gateway-up.sh
+```
+
+**Use this rather than `docker compose up -d`, which is not equivalent.** Ollama
+runs on the host, not in compose — a Linux container on macOS has no Metal, so a
+containerised Ollama drops to CPU and an 8B model becomes unusable. The script
+brings up compose *and* Ollama with the environment it needs, then smoke-tests
+both local aliases so a broken prerequisite surfaces here instead of as a hung
+Claude Code session.
+
+```bash
+./gateway-up.sh --status     # report without changing anything
+./gateway-up.sh --no-local   # skip Ollama entirely
+```
+
+Nothing installs a background service, so run it again after a reboot.
+
+> ⚠ **Never `docker compose down -v`.** The `-v` destroys the `pgdata` volume and
+> with it every virtual key and all spend history. Plain `down` is safe.
+>
+> ⚠ `docker compose restart` reuses the container's baked-in environment, so an
+> edited `.env` needs `up -d` — which is what `gateway-up.sh` runs.
+
+### 3. Mint a developer key, and save it to `.vkey`
+
+A virtual key is scoped to a set of models and a budget, and carries the
+developer's name for attribution:
 
 ```bash
 curl -s -X POST http://localhost:4000/key/generate \
@@ -56,16 +130,44 @@ curl -s -X POST http://localhost:4000/key/generate \
        "metadata":{"developer":"your.name"}}'
 ```
 
-Point Claude Code at the gateway:
+Put the returned `key` (starting `sk-`) in `litellm-gateway/.vkey` — that file,
+and only that file, is where the launcher reads it from. One active key at a
+time, one place to look. Mint it once; it is not per-run.
+
+### 4. Launch Claude Code
 
 ```bash
-export ANTHROPIC_BASE_URL="http://localhost:4000"
-export ANTHROPIC_AUTH_TOKEN="sk-...the virtual key..."
-unset ANTHROPIC_API_KEY
-claude
+./claude-gw.sh                    # default model
+./claude-gw.sh local-qwen3-8b     # any alias from config.yaml
+./claude-gw.sh gemini-3.7-flash -p "hi"   # extra args pass through to claude
 ```
 
-Full instructions, including the desktop app, are in [`docs/DEMO.md`](docs/DEMO.md).
+**Use the script rather than exporting the variables by hand.** Every failure in
+this PoC so far has been a credential problem that surfaced as something else — a
+placeholder pasted verbatim, an expired key, a variable name that did not exist
+so the token was empty. Claude Code reports all of those as an opaque 401 and
+then retries ten times. `claude-gw.sh` validates the key against the gateway
+first and says what is actually wrong. The key is never printed, only a prefix
+and a length.
+
+For the **desktop app**, point it at `http://localhost:4001` — the picker shim,
+which rewrites `GET /v1/models` so non-Anthropic routes appear in the model
+picker. The CLI uses port 4000 directly.
+
+Full instructions, the model catalogue and a walkthrough of a real captured
+session are in [`docs/DEMO.md`](docs/DEMO.md).
+
+### 5. Check it worked
+
+```bash
+ls capture/                       # one directory per session
+python3 verify.py                 # fidelity scorecard over the capture store
+python3 verify_modify.py          # request-modification scorecard
+python3 verify_routing.py         # route-override and model-attribution scorecard
+```
+
+The dashboard is at <http://localhost:4000/ui>, signed in with
+`LITELLM_MASTER_KEY`.
 
 ## Data handling
 

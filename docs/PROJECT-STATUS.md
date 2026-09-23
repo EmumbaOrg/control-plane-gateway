@@ -1,7 +1,7 @@
 # Enterprise Control Plane for Claude Code — Technical Status Report
 
-**Repository:** `control-plane-gateway` · **Branch:** `skills/emumba-react`
-**Prepared:** 31 Aug 2026 (updated — action item 03 delivered) · **Audience:** Project Manager / engineering leadership
+**Repository:** `control-plane-gateway` · **Branch:** `main`
+**Prepared:** 31 Aug 2026 · **Updated:** 22 Sep 2026 — second skills plugin, and the two injection bugs it exposed · **Audience:** Project Manager / engineering leadership
 **Stage:** Proof of Concept, running on a single developer laptop (`localhost`)
 
 ---
@@ -79,11 +79,21 @@ The five capabilities the PoC was asked to explore. **All five are complete and 
 - **Why:** the highest-value control-plane capability of the five. It moves enforcement from credentials and cost onto **content** — injecting standards, redacting secrets before they leave the network, and applying policy to what is actually sent.
 - **How:** LiteLLM's `CustomLogger` exposes `async_pre_call_hook(user_api_key_dict, cache, data, call_type)`; returning a `dict` replaces the body that gets forwarded. Our `custom_capture.py` already subclassed `CustomLogger` and was already registered, so this was one method on an object the proxy was already loading — no new wiring.
 - **The risk that had to be cleared first:** whether the hook fires on `/v1/messages` at all. That route behaves differently from the others — it is the reason the `anthropic-beta` gap exists — so it was plausible the hook was skipped there. **It is not.** Read from the installed source: `anthropic_endpoints/endpoints.py:101` dispatches through `base_process_llm_request(route_type="anthropic_messages")`, and `common_request_processing.py:1518` awaits `pre_call_hook` and assigns the result back. Unaffected by the `anthropic-beta` gap, which concerns outbound *headers*, not the body.
-- **Two behaviours shipped**, both individually switchable, both fail-open:
+- **Two behaviours shipped on 31 Aug 2026**, both individually switchable, both fail-open:
 
   **(a) `max_tokens` clamp — on by default, ceiling 8000.** Claude Code reserves 32000 output tokens on every request and providers gate on the *reservation*, so a 60-token reply gets refused. The CLI can be fixed with an environment variable; the desktop app cannot, so server-side is the only place that fixes every client at once.
 
   **(b) Secret redaction — off by default.** High-specificity credential patterns in outbound message content are replaced before the request leaves our network. Off by default deliberately: it rewrites developer content, so enabling it should be a decision with a named owner.
+
+- **Three more have shipped since**, on the same hook. The pipeline now runs **five steps in a deliberate order**, documented in `_modify()`:
+
+  | # | Step | Default | Notes |
+  |---|---|---|---|
+  | 1 | Content-based route override | built-in policy | **First, and everything below depends on it** — steps 2 and 5 branch on the model that will actually serve the request, not the one the picker asked for. See [`GATEWAY-MODIFY.md`](GATEWAY-MODIFY.md) behaviour 0 |
+  | 2 | `max_tokens` clamp | on, 8000 | (a) above |
+  | 3 | Secret redaction | off | (b) above |
+  | 4 | Skill injection | `installed` | Four skills across two plugins (§3.5) |
+  | 5 | Tool slimming | local routes only | **Last, deliberately** — injection grows `system` and this shrinks `tools`, so the saving is measured against the request actually forwarded |
 
 - **Proof — the clamp, tested both directions.** Same request (`gemini-3.7-flash`, `max_tokens: 32000`):
 
@@ -100,7 +110,8 @@ The five capabilities the PoC was asked to explore. **All five are complete and 
   - **Audit trail:** every modification appends one line to `capture/modifications.jsonl` recording the *kind* of secret and the count, attributed to a named key — **never the value.** Logging the value would defeat the purpose.
   - **Fail-open, deliberately.** The hook runs in front of every request, so both behaviours fall through to the unmodified body on any error. A modification we failed to apply is a gap; a gateway that refuses all traffic is an outage. **The honest consequence: redaction is best-effort, not a guarantee** — it must not be described as a control that cannot fail.
   - **This also closed the outstanding desktop-app `402`** recorded as "Still unsolved on desktop" in `NON-ANTHROPIC-MODELS.md`. One hook covered both.
-  - **Not built:** injecting Emumba standards into the system prompt — the third option considered. Same hook, but it touches the cacheable prefix, so block ordering needs care.
+  - ~~**Not built:** injecting Emumba standards into the system prompt~~ — **built and shipped since** (§3.5). The concern recorded here was the right one: it touches the cacheable prefix, so ordering matters. Resolved by **appending after** Claude Code's `cache_control` breakpoint, which leaves the cached prefix byte-identical.
+- **Verification:** `verify_modify.py`, **21 checks, all passing.** This proves the *logic* only — that the proxy actually calls the hook needs the live gateway. Two caveats worth carrying: the suite was green for two weeks while the catalogue bug (risk #14) was live, because it exercised one skill; and on 22 Sep 2026 the harness itself was found broken by the per-plugin mount change — it resolved every skill body to a non-existent path, so six injection checks reported `FAIL` for a missing file rather than for anything they tested. It now exits loudly if a manifest entry does not resolve, because **a verification suite that fails for the wrong reason is worse than one that does not run.**
 - **Reference:** `GATEWAY-MODIFY.md`.
 
 ### 3.4 LiteLLM translating to Anthropic format, so Claude Code can use non-Anthropic models — ✅ **Done, verified 27 Aug 2026**
@@ -119,12 +130,32 @@ The five capabilities the PoC was asked to explore. **All five are complete and 
   - **Desktop app needed a shim.** The app's picker hard-vetoes any model ID naming a vendor; the rule was read out of the app bundle. Fixed with vendor-free Claude-shaped aliases plus `picker-shim` (nginx on port 4001) rewriting the display labels. Port 4000 and the CLI are unchanged.
   - **Anthropic does not support this configuration** — they state they do not support routing Claude Code to non-Claude models through any gateway. Record as a standing risk, not a solved problem.
 
-### 3.5 Pulling skill files into Claude Code through LiteLLM — ✅ **Done, verified 27–28 Aug 2026**
+### 3.5 Pulling skill files into Claude Code through LiteLLM — ✅ **Done, verified 27–28 Aug 2026** · extended to a second plugin 15 Sep 2026
 
-- **Why:** central distribution of vetted engineering guidance. Every developer gets the same reviewed React/security/standards material without anyone copying files by hand.
-- **How:** LiteLLM's UI "Skills" page turns out to be a **Claude Code plugin registry**, not a skill host. It stores git-source metadata, serves it at `GET /claude-code/marketplace.json`, and developers add it with `claude plugin marketplace add`. Claude Code then clones the repository itself. An Emumba plugin was built in-repo at `plugins/emumba-react/` (manifest plus a vetted `react-best-practices` skill) and registered in the gateway.
-- **How it was proven:** registered, installed via the LiteLLM marketplace, and a headless `claude --print` session listed the skills under the plugin's namespace. Also verified end to end against a 19-skill external repository.
+- **Why:** central distribution of vetted engineering guidance. Every developer gets the same reviewed material without anyone copying files by hand.
+- **How:** LiteLLM's UI "Skills" page turns out to be a **Claude Code plugin registry**, not a skill host. It stores git-source metadata, serves it at `GET /claude-code/marketplace.json`, and developers add it with `claude plugin marketplace add`. Claude Code then clones the repository itself. Emumba plugins were built in-repo and registered in the gateway.
+- **Two plugins are wired today** — `plugins/emumba-react/` (1 skill, `react-best-practices`) and `plugins/emumba-backend/` (3 skills — `rest-api-conventions`, `spring-boot-service`, `node-express-service`), **four injectable skills in total.** Each carries its own trigger regular expression in `skills-inject.json`; adding the fourth required no change to `custom_capture.py`, which is the claim this item set out to test.
+- **Mounting: one directory per plugin, not one shared mount.** The container mounts each plugin's own skills directory read-only:
+
+  ```
+  ../plugins/emumba-react/skills:/app/skills/emumba-react:ro
+  ../plugins/emumba-backend/skills:/app/skills/emumba-backend:ro
+  ```
+
+  A single flat `:/app/skills` can only ever serve one plugin — the second such line shadows the first and the skills it replaced stop injecting **silently**. Nesting also makes the manifest path mirror the skill's namespaced name (`/app/skills/emumba-backend/rest-api-conventions/SKILL.md` for `emumba-backend:rest-api-conventions`), so a wrong path is visible on sight.
+- **How it was proven:** registered, installed via the LiteLLM marketplace, and a headless `claude --print` session listed the skills under the plugin's namespace. Also verified end to end against a 19-skill external repository. Injection logic is covered by `verify_modify.py` (21 checks, all passing).
 - **Status / findings:**
+  - **The catalogue triggered every skill — found 15 Sep 2026, and latent until the fourth skill.** Claude Code advertises the installed catalogue inside a `<system-reminder>`, one line per skill **including its description** — and a description trips its own trigger:
+
+    ```
+    - emumba-backend:spring-boot-service: Spring Boot service structure …
+                                          ^^^^^^^^^^^ matches \bspring\s*boot\b
+    ```
+
+    With the catalogue in scope, **every installed skill injected into every request regardless of topic.** Measured on a pure Express file: it pulled in React *and* Spring Boot alongside the two that belonged — **17,683 characters** of mostly irrelevant standard. **The defect was undetectable while one skill was configured**, because a lone skill re-triggering off its own catalogue entry is indistinguishable from working; it surfaced only at four. Fixed by stripping `<system-reminder>` blocks before trigger matching, while the installed-check deliberately keeps the full text — the catalogue is exactly what *it* needs to read. Now covered by a regression check that was confirmed to fail against the original code.
+  - **Injection silently skipped the developer who had just opted in — found 15 Sep 2026.** A plugin installed in the current session is advertised by **name only** until its `SKILL.md` metadata is indexed (the "Restart to apply changes" window). The installed-check required a trailing `:` after the name, so those installs read as not-installed and injection was skipped for *exactly* the person who had just opted in. It failed silently, looking identical to a trigger that did not match. The colon is now optional.
+  - **Both bugs failed quiet rather than loud**, which is why neither was caught by use. The generalisable lesson: **a capability that behaves correctly in a one-item demo is not evidence it scales**, and a green verification suite at one skill is what hid the first defect.
+  - **Whether a skill was applied cannot be measured by asking.** `check_skill_usage.py` reads Claude Code's per-skill counter, which is **blind to gateway injection by construction** — an injected skill never passes through the `Skill` tool, so the number correctly stays at zero while the standard is in fact applied. Self-reports are worse: a `SKILL_USED=` line is unreliable in **both** directions, since weaker models receive injected guidance as ordinary system text and deny using any skill, and will equally claim one they never loaded. **Only an output A/B holds** — the same request with injection on and off, compared on whether the answer cites the skill's specific rules. Injected blocks now also instruct the model to name the skill when asked; that makes the self-report *self-fulfilling for the injection path*, so it must not be cited as independent evidence.
   - **Layout is not negotiable.** Claude Code discovers skills only at `<plugin-root>/skills/<name>/SKILL.md`. A repo nesting them by category installs cleanly and loads **zero** skills — so third-party catalogues must be mirrored into a flat layout, not registered directly.
   - Include a `.claude-plugin/plugin.json`, or skills get namespaced by the version directory instead of the plugin name.
   - Use the `url` git-source form. The `github` form makes Claude Code clone over **SSH**, which fails on any machine without a github.com host key.
@@ -132,8 +163,8 @@ The five capabilities the PoC was asked to explore. **All five are complete and 
   - **Distribution is deterministic; activation is not.** Given a React file with a deliberate performance bug and asked for a review without naming the skill, `claude-sonnet-5` auto-loaded the skill and `claude-haiku-4-5` did not. **Publishing a skill does not guarantee any session uses it**, and cheaper models may ignore the curated catalogue entirely.
   - **Therefore skills are advisory guidance, not a control.** This matters for any compliance framing.
   - **The `version` field in the LiteLLM catalog is decorative — found 31 Aug 2026.** The gateway advertised `0.2.0` while every install sat on `0.1.0`, and `claude plugin update` reported *"already at the latest version (0.1.0)"*. The version the CLI honours comes from the cloned repo's `.claude-plugin/plugin.json`, not the catalog entry. **So bumping the version in the LiteLLM dashboard does not ship an update** — an admin would believe they had released while nobody received it, with no error anywhere. Shipping a change means bumping the manifest and pushing; and developers must run *both* `marketplace update` and `plugin update`, because refreshing the catalog alone does not upgrade an installed plugin.
-  - **The registered source does not point at this repository.** It points at `github.com/asif-emumba/testing-skills.git`, so `plugins/emumba-react/` here is the review copy, not what developers actually receive. Reconcile before offering this to anyone.
-  - **Open item:** the plugin currently sits on branch `skills/emumba-react` and is registered against a throwaway local clone. Re-point it at the real repository URL once the branch is merged — the source schema has no branch field, so the plugin must sit on the default branch.
+  - **The registered sources do not point at this repository — and there are now two of them.** Each plugin's marketplace source is a separate external repo, so `plugins/emumba-react/` and `plugins/emumba-backend/` here are the review copies *and the injection source*, not what developers receive over the marketplace path. **The "one file, both paths" guarantee therefore holds only within this host:** the gateway injects from the local directory while a developer installs from the external repo, and nothing enforces that the two agree. Reconcile before offering this to anyone.
+  - **Open item:** the plugins sit on a feature branch and are registered against throwaway local clones. Re-point them at the real repository URLs once merged — the source schema has no branch or ref field, so each plugin must sit on its repository's default branch. With two plugins this is now two reconciliations, not one.
 
 ### 3.6 z.ai as a first-party provider route — ✅ **Done, verified 4 Sep 2026**
 
@@ -402,6 +433,8 @@ docker exec litellm-gateway-litellm-1 python -c \
 | 10 | **Skill activation is not deterministic** | Distribution is reliable; whether a session *uses* a published skill is the model's choice. Sonnet auto-loaded it, Haiku did not | Skills are advisory guidance, **not a control** — important for any compliance framing |
 | 11 | **A registered route on an unfunded account `429`s on every call** | Reads as an outage rather than an empty wallet — the same legibility problem as #5, and the reason paid z.ai models were left unregistered | **Closed 7 Sep 2026** by funding the OpenAI account; `openai-gpt-41-nano` now answers (§3.7). Remains a live constraint for any *future* route: do not register one before funding it. `verify_openai.py` distinguishes `401` / `404` / `429` so the cause is named, not guessed |
 | 12 | **Editing a key in `.env` does not reach a running container** | `docker compose restart` reuses the existing environment, so the old key keeps answering and the failure is unchanged — indistinguishable from the new key also being bad. Cost real debugging time on the OpenAI route | Use `docker compose up -d <service>`, which recreates the container. Compare `sha256` fingerprints of `.env` and `printenv` to confirm, without printing the secret |
+| 13 | **Whether a skill was applied cannot be measured by asking** | The `skillUsage` counter is blind to gateway injection by construction, and a `SKILL_USED=` self-report is unreliable in *both* directions — models deny skills they used and claim ones they did not. **Any evidence built on either is unsound** | **Found 15 Sep 2026.** Only an output A/B (injection on vs off, does the answer cite the skill's specific rules) holds. Injected blocks now also prompt the model to name the skill, which makes that self-report *self-fulfilling* for the injection path — see §6 |
+| 14 | **Injection misfires fail silently, and hide while the catalogue is small** | A mis-scoped trigger injected every skill into every request — 17,683 chars on an unrelated file — with **no error anywhere**. The defect was undetectable at one skill and appeared only at four, so a working one-skill demo is not evidence the mechanism scales | **Found and fixed 15 Sep 2026** (catalogue stripped before trigger matching); regression check added to `verify_modify.py` and confirmed to fail against the original code. The general lesson stands: trigger scope needs a test, and the manifest needs an owner |
 
 ---
 
@@ -414,7 +447,10 @@ docker exec litellm-gateway-litellm-1 python -c \
   - the full conversation history, resent every turn (one measured turn was 609 KB),
   - a **machine fingerprint** of the developer (OS, CPU architecture, Node version, CLI version).
 - They are git-ignored today. **Retention period, storage location, and who may read them are open policy questions** — these need the security owner before this becomes a shared service.
-- **The master key is currently a placeholder value** published as an example in the repo's own README, and the dashboard signs in with it. Tolerable while bound to `localhost`; must be replaced with a generated secret before any shared deployment. (Changing it invalidates existing virtual keys — do it before handing keys out.)
+- **The master key is hand-chosen, and it is the only thing separating an operator from every captured prompt.** *Re-verified 22 Sep 2026:* the earlier form of this item — a placeholder key published as an example in the repo's own README — **no longer applies.** `config.yaml` reads `os.environ/LITELLM_MASTER_KEY`, and no literal key appears in any README or tracked file. What remains is the decision, not the leak: the operative key is whatever a human typed into `.env`, it is not generated, and the dashboard signs in with it. It mints keys, revokes them, and can read every captured prompt. Replace with a generated secret before any shared deployment — and do it *before* handing keys out, because rotating it invalidates existing virtual keys.
+- **Prompt rewriting has become a multi-plugin surface, and its policy has no reviewer.** Skill injection now spans **two plugins and four skills**, each governed by a trigger regular expression in `skills-inject.json` — a plain data file with no approval step, no owner and no test beyond the one regression check. A trigger decides *whose prompts get rewritten*, so it is a policy statement, and risk #14 shows the failure is not hypothetical: a mis-scoped match injected every skill into every request and reported nothing. This needs the same named owner the redaction pattern list needs. It is the same class of decision as the `GATEWAY_ROUTE_RULES` keywords, which are already treated as a permission list rather than a tuning knob.
+- **Plugins are installed from external repositories the gateway does not control — and there are now two.** Claude Code clones from the registered git source directly, not through the gateway, and `marketplace.json` requires **no authentication**. Reconciling those repos with `plugins/` here (§3.5) is therefore a supply-chain question, not only a tidiness one.
+- **The gateway now instructs the model what to say about its own provenance.** Injected skill blocks tell the model to name the skill when asked, added because weaker models receive injected text as ordinary system prompt and deny using any skill. It is a reasonable fix for a real measurement problem (risk #13), but it means **a model's self-report is no longer independent evidence** that guidance was applied. Any compliance framing must rely on an output A/B, not on asking.
 - **PostgreSQL port 5432 is mapped to the host** for PoC convenience. Remove before deployment.
 - **Two files hold a live virtual key in plaintext** — `litellm-gateway/.vkey` and `litellm-gateway/vkey.json`. Both are correctly git-ignored by the root `.gitignore` and neither has ever been tracked (confirmed with `git check-ignore`), so there is no exposure today. Worth knowing they exist, and that the credential is on disk unencrypted.
 - **The LiteLLM image is pinned to a moving `main-latest` tag.** LiteLLM shipped credential-stealing malware in PyPI releases 1.82.7 and 1.82.8. **Pin a digest before this gateway handles anything real.**
@@ -430,6 +466,8 @@ docker exec litellm-gateway-litellm-1 python -c \
 | Verification | `run_checks.py` (16 checks), `verify.py`, `stub/stub_upstream.py` | 15/16 pass, zero-cost |
 | First-party OpenAI route | `config.yaml` (`openai-gpt-41-nano` + picker alias `claude-haiku-4-5-oai-41n`), `verify_openai.py` (4 checks) | **4/4 pass** — both request shapes `200` with real usage and cost; picker alias also `200` with a `thinking` block attached (§3.7) |
 | Route override + attribution | `custom_capture.py`, `verify_routing.py` (24 checks) | Working; verified live 4 Sep 2026 — selected Haiku, served by `ollama_chat/qwen3:8b`, logged as `ollama_chat/qwen3:8b` in both the capture and the LiteLLM dashboard's spend logs. See [`GATEWAY-MODIFY.md`](GATEWAY-MODIFY.md) behaviour 0 |
+| Skills plugins | `plugins/emumba-react/` (1 skill), `plugins/emumba-backend/` (3 skills) | **4 injectable skills**, mounted one directory per plugin. Registered sources are external repos, not this one — reconciliation open (§3.5) |
+| Request modification | `custom_capture.py`, `verify_modify.py` (**21 checks**) | **21/21 pass.** Proves the logic only; that the proxy calls the hook needs the live gateway. Includes the catalogue regression check added 22 Sep 2026 |
 | Byte-faithful alternative | `capture-tap/tap.py`, `export_captures.py` | Demonstrated on real traffic |
 | Desktop model picker | `picker-shim/nginx.conf` | Working on port 4001 |
 | Developer launcher | `claude-gw.sh` | Validates the key before launching, so failures are legible |

@@ -285,6 +285,14 @@ outside Docker needs to reach it.
 docker compose up -d
 ```
 
+> **This is the from-scratch path, and `docker compose up -d` is correct for it.**
+> What you have built here is Anthropic-only: no host-side Ollama, so there is
+> nothing for compose to miss. If you are instead working from the
+> `control-plane-gateway` repository, use `./gateway-up.sh` — that stack has local
+> model routes backed by an Ollama running on the **host**, and plain `docker
+> compose up -d` leaves them broken in a way that looks like a hang. See
+> [`DEMO.md`](DEMO.md) §5.1.
+
 The first run downloads both images; allow a few minutes. Then:
 
 ```bash

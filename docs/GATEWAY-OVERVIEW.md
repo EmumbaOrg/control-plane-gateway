@@ -218,13 +218,19 @@ curl -s -X POST http://localhost:4000/key/generate \
 | Scoped | Works only for the models listed |
 | Revocable | Delete one database row — no rotation, no redeployment |
 
-> **Open item:** the master key is currently set to the placeholder value shown as
-> an example in `litellm-gateway/README.md`, and the dashboard signs in as `admin`
-> with that same value. Tolerable while everything is bound to `localhost`, but it
-> is the credential that mints keys, revokes them, and can read every captured
-> prompt — so it must be replaced with a generated secret before this runs on a
-> shared machine. Changing it invalidates existing virtual keys, so do it before
-> handing keys out.
+> **Open item:** the master key is hand-chosen rather than generated, and the
+> dashboard signs in as `admin` with that same value.
+>
+> *Re-verified 22 Sep 2026:* the earlier form of this note — that the key was a
+> placeholder published as an example in `litellm-gateway/README.md` — **no longer
+> applies.** `config.yaml` reads `os.environ/LITELLM_MASTER_KEY`, and no literal
+> key appears in any README or tracked file. What remains is the decision, not the
+> leak: the operative key is whatever a human typed into `.env`.
+>
+> Tolerable while everything is bound to `localhost`, but it is the credential
+> that mints keys, revokes them, and can read every captured prompt — so it must
+> be replaced with a generated secret before this runs on a shared machine.
+> Rotating it invalidates existing virtual keys, so do it before handing keys out.
 
 ### 3.5 How the budget check works before the key swap
 
@@ -365,7 +371,7 @@ flowchart TD
     A([Decide to use LiteLLM proxy]) --> B[1 · .env<br/>ANTHROPIC_API_KEY + LITELLM_MASTER_KEY]
     B --> C[2 · config.yaml<br/>model_list · master_key · database_url<br/>drop_params: false · callbacks]
     C --> D[3 · docker-compose.yml<br/>proxy + Postgres · port 4000<br/>mount config + callback + capture dir]
-    D --> E[4 · docker compose up -d]
+    D --> E["4 · ./gateway-up.sh<br/>compose stack + host-side Ollama<br/><i>docker compose up -d alone is not equivalent</i>"]
     E --> F{5 · Mint a virtual key<br/>per developer}
     F --> G[6 · Point Claude Code at it<br/>ANTHROPIC_BASE_URL + ANTHROPIC_AUTH_TOKEN]
     G --> H([Traffic flows and is captured])
