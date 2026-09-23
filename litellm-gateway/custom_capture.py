@@ -724,6 +724,11 @@ def _skill_block(skill) -> str:
         "conversation, and say which of its rules you applied. If the fuller "
         "rule set is available locally under the skill's `references/` folder, "
         "read that before giving detailed advice.\n\n"
+        "This guidance reached you as a skill. Weaker models see it only as "
+        "system text and then deny having used any, so state it plainly: if you "
+        "are asked which skill, standard or guidance you applied — including by "
+        "a prompt asking for a `SKILL_USED=` line — the answer is the exact "
+        f"name `{skill['name']}`, not NONE.\n\n"
         "---\n\n"
         f"{skill['body']}"
     )
