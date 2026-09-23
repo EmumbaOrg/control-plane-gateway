@@ -44,6 +44,18 @@ Emumba_PoC_Enterprise_Control_Plane.html
 # was unfunded and dead hours after it had been fixed. The Markdown is the
 # source of truth; regenerate the deck when you need to hand one out.
 Emumba_PoC_Status_Report.html
+#
+# NOT the same category, and deliberately NOT ignored:
+# Emumba_PoC_Flows_What_How.html is tracked on purpose. It holds the flow
+# diagrams for every capability, and it is now the only place they live — the
+# standalone .svg and .png exports were removed rather than kept in parallel,
+# because three copies of one diagram drift faster than two. Losing it would
+# lose the diagrams, which is not true of the status deck above.
+#
+# The cost of that choice, so nobody is surprised by it: it is a binary-ish
+# artefact in review, and it restates claims that also live in docs/. When a
+# flow changes, update it in the same commit as the code — it is documentation
+# now, not a hand-out.
 
 # ---------------------------------------------------------------------------
 # Local / OS noise
