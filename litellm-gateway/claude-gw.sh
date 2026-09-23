@@ -2,7 +2,7 @@
 #
 # Launch Claude Code against this LiteLLM gateway.
 #
-#   ./claude-gw.sh                    # default model, nemotron-free
+#   ./claude-gw.sh                    # default model, gemini-3.7-flash
 #   ./claude-gw.sh gemini-3.7-flash   # any alias from config.yaml
 #   ./claude-gw.sh gpt-5.2 -p "hi"    # extra args pass through to claude
 #
@@ -241,7 +241,24 @@ echo
 # provider counts it toward the per-minute token limit. Capping it to 8000 is
 # what makes these models usable on a free balance; measured working at 8000,
 # refused at 32000. Raise it if you top up credit and want longer outputs.
+# CLAUDE_CODE_AUTO_CONNECT_IDE=false: do not attach to a running VS Code.
+#
+# When the extension is connected, Claude Code shows the editor's focused tab
+# above the prompt as "⧉ In <file>". During a gateway demo that reads as a
+# claim about ROUTING — watching it sit on "⧉ In custom_capture.py", people
+# concluded every request was being sent through that file. It is only saying
+# which tab is open in VS Code, and it follows whatever you last clicked.
+#
+# There is nothing to fix in the gateway; the fix is to not show it. This
+# script exists to launch demos, so the quiet default belongs here rather than
+# in one person's shell — a teammate cloning the repo gets the same clean run.
+#
+# The connection is a convenience, not a requirement: nothing in this script,
+# the gateway, or skill injection depends on it. To get it back for ordinary
+# editing, run plain `claude`, or export CLAUDE_CODE_AUTO_CONNECT_IDE=true
+# before this script — the override below keeps an explicit value winning.
 exec env -u ANTHROPIC_API_KEY \
+  CLAUDE_CODE_AUTO_CONNECT_IDE="${CLAUDE_CODE_AUTO_CONNECT_IDE:-false}" \
   ANTHROPIC_BASE_URL="$GATEWAY" \
   ANTHROPIC_AUTH_TOKEN="$VK" \
   CLAUDE_CODE_MAX_CONTEXT_TOKENS="${CLAUDE_CODE_MAX_CONTEXT_TOKENS:-$DEFAULT_CTX}" \
