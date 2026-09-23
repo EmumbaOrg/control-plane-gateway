@@ -667,6 +667,8 @@ def _load_skills():
 # LAST one on purpose: the scan budget can truncate mid-block, and a trailing
 # unterminated `<system-reminder>` would otherwise keep its catalogue in scope
 # and reintroduce the self-triggering it exists to remove.
+_SYSTEM_REMINDER_RE = re.compile(
+    r"<system-reminder>(?:.*?</system-reminder>|.*\Z)", re.S | re.I)
 
 
 def _skill_is_installed(name: str, haystack: str) -> bool:
@@ -739,7 +741,24 @@ def _inject_skills(data: dict, changes: dict) -> None:
     haystack = _scan_text(data.get("messages"), INJECT_SCAN_CHARS)
     if not haystack:
         return
-    matched = [s for s in skills if s["trigger"].search(haystack)]
+    # Triggers are matched against the conversation WITHOUT the
+    # `<system-reminder>` blocks, because one of those blocks is Claude Code's
+    # own skill catalogue — and every skill's description trips its own trigger:
+    #
+    #   - emumba-backend:spring-boot-service: Spring Boot service structure …
+    #                                         ^^^^^^^^^^^ matches \bspring\s*boot\b
+    #
+    # So with the catalogue in scope, every installed skill injects on every
+    # request regardless of topic. Measured 15 Sep 2026: a pure Express file
+    # pulled in React AND Spring Boot AND the two that belonged, 17,683 chars
+    # of mostly irrelevant standard. The bug was latent while one skill was
+    # configured — react-best-practices was simply re-triggering itself, which
+    # looks identical to working — and only became visible at four.
+    #
+    # The installed-check below deliberately keeps the FULL haystack: the
+    # catalogue is exactly what it needs to read.
+    trigger_haystack = _SYSTEM_REMINDER_RE.sub(" ", haystack)
+    matched = [s for s in skills if s["trigger"].search(trigger_haystack)]
     if INJECT_MODE == "installed":
         matched = [s for s in matched if _skill_is_installed(s["name"], haystack)]
     if not matched:
