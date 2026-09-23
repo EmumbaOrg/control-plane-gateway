@@ -16,6 +16,7 @@ live gateway — see ../docs/GATEWAY-MODIFY.md for the two curl commands.
 
 import json
 import os
+import re
 import sys
 import tempfile
 
@@ -31,10 +32,28 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 # Point the injector at the real manifest, but with the container paths rewritten
 # to their repo equivalents so this runs without Docker. The trigger regexes and
 # the skill bodies under test are therefore the genuine ones, not fixtures.
+#
+# The two layouts are NOT a prefix swap — the `skills` segment moves:
+#
+#     container   /app/skills/<plugin>/<skill>/SKILL.md
+#     repo        ../plugins/<plugin>/skills/<skill>/SKILL.md
+#
+# so the plugin name has to be pulled out and re-inserted around it. A plain
+# `.replace("/app/skills", …/plugins/emumba-react/skills)` was correct only
+# while one plugin was mounted flat; with per-plugin mounts it silently
+# resolved to a path that does not exist, `_load_skills()` skipped every entry,
+# and SIX injection checks reported FAIL for a missing file rather than for
+# anything they were written to test.
 _manifest = json.load(open(os.path.join(HERE, "skills-inject.json")))
 for _s in _manifest["skills"]:
-    _s["path"] = _s["path"].replace(
-        "/app/skills", os.path.join(HERE, "..", "plugins", "emumba-react", "skills"))
+    _rel = _s["path"].removeprefix("/app/skills/")
+    _plugin, _, _tail = _rel.partition("/")
+    _s["path"] = os.path.join(HERE, "..", "plugins", _plugin, "skills", _tail)
+    if not os.path.exists(_s["path"]):
+        sys.exit(f"verify_modify: manifest entry {_s['name']} does not resolve to a "
+                 f"file in this repo:\n  {_s['path']}\n"
+                 "Fix the manifest or this mapping before reading any result below — "
+                 "a missing body makes every injection check fail for the wrong reason.")
 _manifest_path = os.path.join(os.environ["CAPTURE_DIR"], "skills-inject.json")
 with open(_manifest_path, "w") as _fh:
     json.dump(_manifest, _fh)
@@ -270,6 +289,57 @@ try:
     report("Mentioning a skill by name does not count as installed",
            cc.INJECT_MARKER not in json.dumps(out.get("system")),
            "detection is anchored on the `- name:` catalogue line")
+
+    # --- 20. THE REGRESSION: the catalogue must not trigger its own skills --
+    # Shipped 15 Sep 2026 and passed every check above, because with ONE skill
+    # configured a skill re-triggering off its own catalogue line is
+    # indistinguishable from working. Claude Code's catalogue lists each skill
+    # WITH ITS DESCRIPTION, and a description contains the very words its
+    # trigger matches:
+    #
+    #   - emumba-backend:spring-boot-service: Spring Boot service structure …
+    #                                         ^^^^^^^^^^^ matches \bspring\s*boot\b
+    #
+    # so every installed skill injected into every request regardless of topic.
+    # This case is deliberately built the way the bug was found: an Express-only
+    # conversation, with the FULL catalogue present so the installed-check still
+    # passes. Only the Node/Express skill may appear.
+    #
+    # It needs at least two skills in the manifest to mean anything. If the
+    # manifest is ever cut back to one, this check must be kept and fed a
+    # synthetic second entry rather than deleted — a green suite at one skill is
+    # exactly what hid the defect the first time.
+    express = {
+        "model": "claude-sonnet-4-5-nvda-super-120b-free",
+        "max_tokens": 8000,
+        "system": [{"type": "text", "text": "You are Claude Code.",
+                    "cache_control": {"type": "ephemeral"}}],
+        "messages": [
+            {"role": "user", "content": [{"type": "text", "text":
+             "<system-reminder>\nThe following skills are available:\n"
+             "- emumba-react:react-best-practices: React and Next.js performance guide.\n"
+             "- emumba-backend:spring-boot-service: Spring Boot service structure for Emumba.\n"
+             "- emumba-backend:rest-api-conventions: REST API conventions for Emumba services.\n"
+             "- emumba-backend:node-express-service: Node and Express service structure.\n"
+             "</system-reminder>"}]},
+            {"role": "user", "content": [{"type": "text", "text":
+             "const app = require('express')()\n"
+             "app.use((req, res, next) => next())\n"
+             "review this"}]},
+        ],
+    }
+    out = modify(express)
+    blob = json.dumps(out.get("system"))
+    # Each injected block opens with `<!-- emumba-gateway-skill:<name> -->`, so
+    # the set of injected skills can be read back exactly rather than guessed at
+    # from body text.
+    got = set(re.findall(re.escape(cc.INJECT_MARKER) + r"(.+?) -->", blob))
+    leaked = got & {"emumba-react:react-best-practices",
+                    "emumba-backend:spring-boot-service"}
+    report("Catalogue does not trigger unrelated skills",
+           bool(got) and not leaked,
+           f"Express-only conversation, full catalogue present — injected {sorted(got)}"
+           + (f"; LEAKED {sorted(leaked)}" if leaked else ""))
 finally:
     cc.INJECT_MODE = "always"
 
