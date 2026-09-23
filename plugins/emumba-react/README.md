@@ -180,11 +180,24 @@ a version nobody is running.
 
 ## Where the registered source actually points
 
-As of 31 Aug 2026 the gateway registration points at
-`https://github.com/asif-emumba/testing-skills.git`, path `plugins/emumba-react`
-— **not** at the control-plane repository. So this folder is the source of truth
-for review, but it is not what developers receive until it is pushed there. Worth
-reconciling before this is offered to anyone.
+As of 23 Sep 2026 the gateway registration points at
+**`https://github.com/asif-emumba/emumba-skills-react.git`** (`url` source form,
+plugin at the repo root) — **not** at the control-plane repository.
+
+It previously pointed at `testing-skills.git`, path `plugins/emumba-react`, a
+shared repo that also held `emumba-backend`. That was replaced because a shared
+repo duplicated the backend plugin with no source of truth and could not express
+per-guild ownership. Each plugin now has its own repo, matching
+`emumba-skills-backend`.
+
+**So this folder is not what developers receive.** It is the copy the *gateway
+injects from* — `docker-compose.yml` mounts `./skills` into the container — while
+the marketplace path clones from GitHub. Three copies exist in total: this one,
+the external repo, and each developer's `~/.claude/plugins/cache/`. Nothing
+synchronises them, and drift here is silent: it already happened once, when this
+manifest sat at `0.1.0` while the published plugin was `0.2.0`.
+
+Keeping them in step is manual today. Reconcile before this is offered to anyone.
 
 
 ## Notes and limits
