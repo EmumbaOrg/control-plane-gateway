@@ -10,17 +10,47 @@ server.
 | Path | Purpose |
 |---|---|
 | `litellm-gateway/` | LiteLLM proxy + PostgreSQL, with a custom capture callback |
-| `plugins/emumba-react/` | React / Next.js skills plugin, distributed to developers through the gateway |
-| `plugins/emumba-backend/` | Backend skills plugin — REST conventions, Spring Boot, Node/Express |
+| `plugins/emumba-react/` | Gateway-side copy of the React / Next.js skills plugin — source: [emumba-skills-react](https://github.com/asif-emumba/emumba-skills-react) |
+| `plugins/emumba-backend/` | Gateway-side copy of the backend skills plugin — source: [emumba-skills-backend](https://github.com/asif-emumba/emumba-skills-backend) |
 | `capture-tap/` | A thin byte-level tap in the data path — the alternative approach |
 | `docs/` | Everything below |
 
-Each plugin under `plugins/` reaches the model by **two paths from one file**:
-developers install the plugin from the gateway's marketplace, *and* the gateway
-injects the same `SKILL.md` server-side when a request matches a trigger. The
-container mounts the plugin directories read-only rather than holding copies, so
-the two paths cannot drift. See
+Each skills plugin reaches the model by **two paths**: developers install the
+plugin from the gateway's marketplace, which clones it from its own repository
+(below), *and* the gateway injects the matching `SKILL.md` server-side, from the
+copy under `plugins/`, when a request matches a trigger. See
 [`docs/GATEWAY-MODIFY.md`](docs/GATEWAY-MODIFY.md).
+
+## Skills repositories
+
+Each skills plugin has its own public repository. Those repositories are where
+skills are authored, and they are what the gateway's marketplace clones when a
+developer installs a plugin:
+
+| Plugin | Repository | Skills |
+|---|---|---|
+| `emumba-react` | <https://github.com/asif-emumba/emumba-skills-react> | React / Next.js |
+| `emumba-backend` | <https://github.com/asif-emumba/emumba-skills-backend> | REST conventions, Spring Boot, Node/Express |
+
+**To add or change a skill**, open a change in the repository for that plugin,
+not in this one:
+
+1. Add `skills/<skill-name>/SKILL.md` (or edit an existing one) and bump
+   `version` in `.claude-plugin/plugin.json`.
+2. Merge to the default branch. The marketplace source has no branch or ref
+   field, so that is the only branch developers receive.
+3. Developers pick it up with `claude plugin marketplace update litellm`
+   followed by `claude plugin update <plugin>@litellm`.
+
+A skill for a new area (a new guild or stack) gets a new plugin in its own
+repository, registered in the gateway's marketplace, rather than being added to
+an existing one.
+
+> The `plugins/` folder in this repo is **not** the source. It is the copy the
+> gateway injects from server-side, and nothing syncs it with the repositories
+> above. After a skill changes upstream, copy it here too, or the injected and
+> installed versions drift. See
+> [`plugins/emumba-react/README.md`](plugins/emumba-react/README.md#where-the-registered-source-actually-points).
 
 Start with [`docs/GATEWAY-OVERVIEW.md`](docs/GATEWAY-OVERVIEW.md) — what was built
 and why, in diagrams. Then [`docs/DEMO.md`](docs/DEMO.md) for configuration, usage,
