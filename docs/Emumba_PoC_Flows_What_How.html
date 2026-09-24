@@ -1,0 +1,1737 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Control Plane PoC — Flows, What &amp; How</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;450;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+<style>
+  :root {
+    --bg: #fbfbfd; --surface: #ffffff; --surface-2: #f5f6f9;
+    --ink: #101828; --ink-2: #344054; --muted: #667085;
+    --line: #e7e9ee; --line-2: #d5d9e2;
+    --accent: #4f46e5; --accent-ink: #3730a3; --accent-soft: #eef1fe; --accent-line: #dfe3fd;
+    --cyan: #0e7490; --cyan-soft: #ecfbff; --cyan-line: #cbeaf5;
+    --amber: #b45309; --amber-soft: #fdf7ed; --amber-line: #f2e4cd;
+    --shadow-sm: 0 1px 2px rgba(16,24,40,.04), 0 1px 3px rgba(16,24,40,.04);
+    --shadow-md: 0 2px 4px rgba(16,24,40,.03), 0 8px 24px rgba(16,24,40,.06);
+    --sans: "Inter", -apple-system, BlinkMacSystemFont, "Helvetica Neue", Helvetica, Arial, sans-serif;
+    --mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  html { -webkit-text-size-adjust: 100%; scroll-behavior: smooth; scroll-padding-top: 20px; }
+  body {
+    font-family: var(--sans); font-size: 16.5px; line-height: 1.62;
+    letter-spacing: -.006em; color: var(--ink-2); background: var(--bg);
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 1060px; margin: 0 auto; padding: 0 28px 96px; }
+
+  /* ---------- masthead ---------- */
+  header.top { padding: 68px 0 34px; border-bottom: 1px solid var(--line); margin-bottom: 44px; }
+  .eyebrow {
+    font-size: .705rem; font-weight: 600; letter-spacing: .1em; text-transform: uppercase;
+    color: var(--accent); margin-bottom: .85rem;
+  }
+  h1 {
+    font-size: clamp(1.95rem, 4.4vw, 2.85rem); line-height: 1.12; letter-spacing: -.032em;
+    color: var(--ink); font-weight: 700; margin-bottom: .9rem;
+  }
+  .standfirst { font-size: 1.06rem; color: var(--ink-2); max-width: 74ch; }
+  .meta { display: flex; flex-wrap: wrap; gap: 1.6rem; margin-top: 1.9rem; }
+  .meta div { font-size: .78rem; }
+  .meta dt { color: var(--muted); text-transform: uppercase; letter-spacing: .07em; font-size: .68rem; font-weight: 600; }
+  .meta dd { color: var(--ink); font-weight: 550; margin-top: .18rem; }
+
+  /* ---------- contents ---------- */
+  nav.toc {
+    background: var(--surface); border: 1px solid var(--line); border-radius: 16px;
+    padding: 1.3rem 1.5rem; box-shadow: var(--shadow-sm); margin-bottom: 52px;
+  }
+  nav.toc h2 {
+    font-size: .7rem; font-weight: 600; letter-spacing: .09em; text-transform: uppercase;
+    color: var(--muted); margin-bottom: .85rem;
+  }
+  nav.toc ol { list-style: none; display: grid; grid-template-columns: repeat(auto-fill, minmax(255px, 1fr)); gap: .45rem 1.6rem; counter-reset: t; }
+  nav.toc li { counter-increment: t; font-size: .9rem; }
+  nav.toc li::before {
+    content: counter(t, decimal-leading-zero); font-family: var(--mono); font-size: .74rem;
+    color: var(--accent); margin-right: .6rem;
+  }
+  nav.toc a { color: var(--ink-2); text-decoration: none; border-bottom: 1px solid transparent; }
+  nav.toc a:hover { color: var(--accent-ink); border-bottom-color: var(--accent-line); }
+
+  /* ---------- sections ---------- */
+  section { margin-bottom: 72px; scroll-margin-top: 24px; }
+  .sec-head { display: flex; align-items: baseline; gap: .8rem; margin-bottom: 1.35rem; }
+  .sec-num {
+    font-family: var(--mono); font-size: .75rem; font-weight: 500; color: var(--accent);
+    background: var(--accent-soft); border: 1px solid var(--accent-line);
+    border-radius: 6px; padding: .12rem .45rem; flex: none;
+  }
+  h2.sec-title { font-size: 1.42rem; line-height: 1.24; letter-spacing: -.028em; color: var(--ink); font-weight: 650; }
+
+  /* ---------- figure ---------- */
+  .scroller { overflow-x: auto; overflow-y: visible; padding-bottom: .4rem; }
+  .fig {
+    background: var(--surface); border: 1px solid var(--line); border-radius: 16px;
+    padding: 1.35rem 1.4rem 1.2rem; box-shadow: var(--shadow-sm); margin-bottom: 1.6rem;
+  }
+  .fig-cap { display: flex; align-items: baseline; gap: .6rem; flex-wrap: wrap; margin-bottom: 1.15rem; }
+  .fig-cap b {
+    font-size: .7rem; font-weight: 600; letter-spacing: .08em; text-transform: uppercase;
+    color: var(--accent); background: var(--accent-soft); border: 1px solid var(--accent-line);
+    border-radius: 5px; padding: .1rem .42rem;
+  }
+  .fig-cap span { font-size: .905rem; font-weight: 550; color: var(--ink); letter-spacing: -.018em; }
+  .fig svg { display: block; width: 100%; height: auto; }
+  .fig svg text { font-family: var(--sans); }
+  .fig svg .mono { font-family: var(--mono); }
+
+  /* ---------- what / how ---------- */
+  .wh { display: grid; grid-template-columns: 1fr 1fr; gap: 1.1rem; align-items: start; }
+  .card {
+    background: var(--surface); border: 1px solid var(--line); border-radius: 16px;
+    padding: 1.35rem 1.45rem 1.45rem; box-shadow: var(--shadow-sm);
+  }
+  .card > h3 {
+    font-size: .72rem; font-weight: 600; letter-spacing: .1em; text-transform: uppercase;
+    margin-bottom: .95rem; padding-bottom: .6rem; border-bottom: 1px solid var(--line);
+  }
+  .card.what { border-top: 3px solid var(--accent); }
+  .card.what > h3 { color: var(--accent); }
+  .card.how { border-top: 3px solid var(--cyan); }
+  .card.how > h3 { color: var(--cyan); }
+  .card p { font-size: .92rem; }
+  .card p + p, .card p + ul, .card ul + p { margin-top: .75rem; }
+  .card ul { list-style: none; }
+  .card li { font-size: .92rem; position: relative; padding-left: 1.15rem; }
+  .card li + li { margin-top: .6rem; }
+  .card li::before {
+    content: ""; position: absolute; left: .1rem; top: .68em;
+    width: 5px; height: 5px; border-radius: 50%; background: var(--line-2);
+  }
+  .card.what li::before { background: var(--accent-line); }
+  .card.how li::before { background: var(--cyan-line); }
+  b, strong { color: var(--ink); font-weight: 600; }
+  em { font-style: italic; }
+  code {
+    font-family: var(--mono); font-size: .84em; background: var(--surface-2);
+    border: 1px solid var(--line); border-radius: 5px; padding: .06em .32em; color: var(--ink);
+    word-break: break-word;
+  }
+  /* ---------- verified command blocks ---------- */
+  .cmd-h {
+    margin-top: 1.5rem; font-size: .72rem; font-weight: 600; letter-spacing: .09em;
+    text-transform: uppercase; color: var(--cyan);
+    padding-top: .9rem; border-top: 1px solid var(--line);
+  }
+  .cmd-lede { margin-top: .5rem; font-size: .86rem; color: var(--muted); }
+  .cmd-lede code { font-size: .8em; }
+  pre.cmd {
+    margin-top: .75rem; background: #0f1523; border: 1px solid #1d2433; border-radius: 12px;
+    padding: .95rem 1.05rem; overflow-x: auto;
+    font-family: var(--mono); font-size: .775rem; line-height: 1.72;
+    color: #e2e8f5; white-space: pre; tab-size: 2;
+  }
+  pre.cmd .c { color: #7d8aa6; }
+
+  .note {
+    margin-top: 1rem; border-radius: 10px; padding: .8rem .95rem; font-size: .875rem;
+  }
+  .note.amber { background: var(--amber-soft); border: 1px solid var(--amber-line); color: var(--amber); }
+  .note.amber b, .note.amber strong { color: #8a3f07; }
+  .note.amber code { background: #fff; border-color: var(--amber-line); color: #8a3f07; }
+  .note.red { background: #fdf4f4; border: 1px solid #f0d4d4; color: #b42318; }
+  .note.red b, .note.red strong { color: #8a1c14; }
+  .note.red code { background: #fff; border-color: #f0d4d4; color: #8a1c14; }
+
+  footer {
+    border-top: 1px solid var(--line); padding-top: 1.5rem; font-size: .82rem; color: var(--muted);
+  }
+  footer p + p { margin-top: .5rem; }
+
+  @media (max-width: 860px) {
+    .wrap { padding: 0 18px 64px; }
+    .wh { grid-template-columns: 1fr; }
+    .fig { padding: 1.1rem 1rem; }
+  }
+  @media print {
+    body { background: #fff; }
+    section, .fig, .card { break-inside: avoid; }
+    nav.toc { display: none; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="top">
+  <div class="eyebrow">Control Plane PoC &middot; Condensed</div>
+  <h1>Enterprise Control Plane for Claude Code</h1>
+  <p class="standfirst">
+    A gateway we operate, sitting between Emumba developers' Claude Code and the model provider — so that
+    traffic is captured, spend is attributable per developer, budgets are enforced centrally, and the real
+    provider key never leaves the server. This is the flow-by-flow condensation of the full status report:
+    each capability as a diagram, <b>what</b> it does, and <b>how</b> it works.
+  </p>
+  <dl class="meta">
+    <div><dt>Source</dt><dd>Emumba_PoC_Status_Report.html</dd></div>
+    <div><dt>Repository</dt><dd>control-plane-gateway</dd></div>
+    <div><dt>Stage</dt><dd>Proof of Concept &middot; localhost</dd></div>
+    <div><dt>Status</dt><dd>5 / 5 action items verified</dd></div>
+    <div><dt>Updated</dt><dd>22 Sep 2026 &middot; second skills plugin</dd></div>
+  </dl>
+</header>
+
+<nav class="toc">
+  <h2>Flows in this document</h2>
+  <ol>
+    <li><a href="#architecture">The gateway, and why traffic cannot go around it</a></li>
+    <li><a href="#gates">Budgets and model access — three gates before the provider</a></li>
+    <li><a href="#credentials">Credential containment — the real key never leaves the server</a></li>
+    <li><a href="#modify">Modifying the request in flight — clamp and redaction</a></li>
+    <li><a href="#skills">Skill distribution — two paths from one file</a></li>
+    <li><a href="#local">A private local model, driven from unmodified Claude Code</a></li>
+    <li><a href="#zai">z.ai — a first-party provider, added without code</a></li>
+    <li><a href="#openai">OpenAI — the same path, re-tested, and where it stops</a></li>
+    <li><a href="#routing">Content-based route override — keeping a client's work on-prem</a></li>
+    <li><a href="#picker">The desktop model picker — two ports, one gateway</a></li>
+  </ol>
+</nav>
+
+<section id="architecture">
+  <div class="sec-head">
+    <span class="sec-num">01</span>
+    <h2 class="sec-title">The gateway, and why traffic cannot go around it</h2>
+  </div>
+
+  <div class="fig">
+    <div class="fig-cap"><b>Figure 1</b><span>Claude Code without the gateway, with it, and with a non-Anthropic model</span></div>
+    <div class="scroller">
+<svg viewBox="0 0 1000 880" role="img" aria-label="Row A: Claude Code direct to the provider, no record or budget. Row B: with the gateway, which validates the key, checks budget, swaps in the real key and forwards either to Anthropic as a passthrough or to OpenRouter with the format translated. Row C: the translation round trip in detail — Anthropic-format request into the gateway, OpenAI format out to OpenRouter, provider-native beyond, and the reverse on the way back." style="min-width:820px">
+      <defs>
+        <marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M0 0 L10 5 L0 10 z" fill="#98a2b3"/>
+        </marker>
+        <marker id="arA" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M0 0 L10 5 L0 10 z" fill="#6366f1"/>
+        </marker>
+        <marker id="arG" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M0 0 L10 5 L0 10 z" fill="#17b26a"/>
+        </marker>
+        <marker id="arC" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M0 0 L10 5 L0 10 z" fill="#0e7490"/>
+        </marker>
+      </defs>
+
+      <!-- ROW A -->
+      <text x="0" y="14" font-size="11" font-weight="600" letter-spacing="0.09em" fill="#667085">A &nbsp;·&nbsp; TODAY — DIRECT TO THE PROVIDER</text>
+      <line x1="0" y1="24" x2="1000" y2="24" stroke="#e7e9ee"/>
+
+      <rect x="2" y="46" width="210" height="64" rx="11" fill="#fff" stroke="#d5d9e2"/>
+      <text x="107" y="72" text-anchor="middle" font-size="12.5" font-weight="600" fill="#101828">Developer laptop</text>
+      <text x="107" y="90" text-anchor="middle" font-size="10.5" fill="#667085">Claude Code + the real API key</text>
+
+      <line x1="214" y1="78" x2="300" y2="78" stroke="#98a2b3" stroke-width="1.6" marker-end="url(#ar)"/>
+
+      <rect x="304" y="46" width="196" height="64" rx="11" fill="#ecfbff" stroke="#cbeaf5"/>
+      <text x="402" y="72" text-anchor="middle" font-size="12.5" font-weight="600" fill="#0e7490">api.anthropic.com</text>
+      <text x="402" y="90" text-anchor="middle" font-size="10.5" fill="#0e7490">generates the answer</text>
+
+      <rect x="546" y="46" width="452" height="64" rx="11" fill="#fef3f2" stroke="#fecdca"/>
+      <text x="570" y="72" font-size="12" font-weight="600" fill="#b42318">No record &nbsp;·&nbsp; No budget &nbsp;·&nbsp; No attribution &nbsp;·&nbsp; No model limit</text>
+      <text x="570" y="90" font-size="10.5" fill="#912018">A leaked key must be rotated on every laptop.</text>
+
+      <!-- ROW B -->
+      <text x="0" y="176" font-size="11" font-weight="600" letter-spacing="0.09em" fill="#4f46e5">B &nbsp;·&nbsp; WITH THE GATEWAY WE OPERATE</text>
+      <line x1="0" y1="186" x2="1000" y2="186" stroke="#dfe3fd"/>
+
+      <rect x="2" y="212" width="200" height="64" rx="11" fill="#fff2cc" stroke="#e8c96b"/>
+      <text x="102" y="238" text-anchor="middle" font-size="12.5" font-weight="600" fill="#7f6000">Developer laptop</text>
+      <text x="102" y="256" text-anchor="middle" font-size="10.5" fill="#7f6000">holds only a virtual key</text>
+
+      <line x1="204" y1="244" x2="286" y2="244" stroke="#6366f1" stroke-width="1.7" marker-end="url(#arA)"/>
+      <text x="245" y="234" text-anchor="middle" font-size="9.5" fill="#6366f1" font-weight="600">request</text>
+
+      <rect x="290" y="196" width="286" height="96" rx="13" fill="#f6f7ff" stroke="#c7cdfa" stroke-width="1.5"/>
+      <text x="433" y="220" text-anchor="middle" font-size="12.5" font-weight="600" fill="#3730a3">LiteLLM gateway &nbsp;:4000</text>
+      <text x="433" y="240" text-anchor="middle" font-size="10.5" fill="#4f46e5">validate key &nbsp;→&nbsp; check model &nbsp;→&nbsp; check budget</text>
+      <text x="433" y="258" text-anchor="middle" font-size="10.5" fill="#4f46e5">swap in the REAL key &nbsp;→&nbsp; forward &amp; stream back</text>
+      <rect x="306" y="266" width="254" height="18" rx="5" fill="#eef1fe" stroke="#dfe3fd"/>
+      <text x="433" y="279" text-anchor="middle" font-size="9.5" fill="#3730a3" font-weight="600">the real provider key never leaves this host</text>
+
+      <path d="M578 244 L616 244 L616 216 L656 216" stroke="#6366f1" stroke-width="1.7" fill="none" marker-end="url(#arA)"/>
+      <path d="M578 244 L616 244 L616 272 L656 272" stroke="#6366f1" stroke-width="1.7" fill="none" marker-end="url(#arA)"/>
+      <text x="617" y="234" text-anchor="middle" font-size="9.5" fill="#6366f1" font-weight="600">real key</text>
+
+      <rect x="660" y="192" width="230" height="48" rx="10" fill="#ecfbff" stroke="#cbeaf5"/>
+      <text x="775" y="211" text-anchor="middle" font-size="12" font-weight="600" fill="#0e7490">api.anthropic.com</text>
+      <text x="775" y="229" text-anchor="middle" font-size="10" fill="#0e7490">passthrough &mdash; body unchanged</text>
+
+      <rect x="660" y="248" width="230" height="48" rx="10" fill="#ecfbff" stroke="#cbeaf5"/>
+      <text x="775" y="267" text-anchor="middle" font-size="12" font-weight="600" fill="#0e7490">OpenRouter / Groq</text>
+      <text x="775" y="285" text-anchor="middle" font-size="10" fill="#0e7490">format translated &mdash; see <tspan font-weight="700">C</tspan></text>
+
+      <!-- outputs -->
+      <path d="M433 292 L433 320" stroke="#17b26a" stroke-width="1.6" fill="none"/>
+      <path d="M433 320 L250 320 L250 340" stroke="#17b26a" stroke-width="1.6" fill="none" marker-end="url(#arG)"/>
+      <path d="M433 320 L616 320 L616 340" stroke="#17b26a" stroke-width="1.6" fill="none" marker-end="url(#arG)"/>
+
+      <rect x="128" y="344" width="244" height="60" rx="11" fill="#ecfdf3" stroke="#abefc6"/>
+      <text x="250" y="368" text-anchor="middle" font-size="12" font-weight="600" fill="#067647">capture/ &nbsp;— JSON on disk</text>
+      <text x="250" y="386" text-anchor="middle" font-size="10.5" fill="#05603a">full request + response, per session</text>
+
+      <rect x="494" y="344" width="244" height="60" rx="11" fill="#ecfdf3" stroke="#abefc6"/>
+      <text x="616" y="368" text-anchor="middle" font-size="12" font-weight="600" fill="#067647">PostgreSQL</text>
+      <text x="616" y="386" text-anchor="middle" font-size="10.5" fill="#05603a">cost · tokens · keys · budgets</text>
+
+      <text x="760" y="368" font-size="10.5" fill="#667085">Capture is a property of the</text>
+      <text x="760" y="384" font-size="10.5" fill="#667085">path, not an extra step.</text>
+
+      <!-- ROW C : the translated path in detail -->
+      <text x="0" y="446" font-size="11" font-weight="600" letter-spacing="0.09em" fill="#0e7490">C &nbsp;·&nbsp; THE TRANSLATED PATH — ANTHROPIC IN, ANTHROPIC OUT</text>
+      <line x1="0" y1="456" x2="1000" y2="456" stroke="#cbeaf5"/>
+
+      <text x="0" y="480" font-size="10" font-weight="700" fill="#3730a3">REQUEST &mdash; outbound</text>
+
+      <rect x="0" y="492" width="198" height="80" rx="11" fill="#eef1fe" stroke="#c7cdfb"/>
+      <text x="99" y="516" text-anchor="middle" font-size="11.5" font-weight="600" fill="#3730a3">Claude Code</text>
+      <text x="99" y="535" text-anchor="middle" font-size="9.5" fill="#4338ca">POST /v1/messages</text>
+      <text x="99" y="550" text-anchor="middle" font-size="9.5" fill="#4338ca">unmodified, unaware</text>
+      <text x="99" y="565" text-anchor="middle" font-size="9.5" fill="#6366f1">only BASE_URL changed</text>
+
+      <path d="M198 532 L260 532" stroke="#6366f1" stroke-width="1.8" fill="none" marker-end="url(#arA)"/>
+      <text x="229" y="522" text-anchor="middle" font-size="9" fill="#6366f1">Anthropic</text>
+
+      <rect x="266" y="492" width="198" height="80" rx="11" fill="#fff" stroke="#c7cdfb" stroke-width="1.4"/>
+      <text x="365" y="516" text-anchor="middle" font-size="11.5" font-weight="600" fill="#3730a3">LiteLLM :4000</text>
+      <text x="365" y="535" text-anchor="middle" font-size="9.5" fill="#667085">alias &rarr; <tspan class="mono">openrouter/&hellip;</tspan></text>
+      <text x="365" y="550" text-anchor="middle" font-size="9.5" fill="#667085">auth · budget · clamp · capture</text>
+      <text x="365" y="565" text-anchor="middle" font-size="9.5" font-weight="600" fill="#3730a3">then translate</text>
+
+      <path d="M464 532 L526 532" stroke="#6366f1" stroke-width="1.8" fill="none" marker-end="url(#arA)"/>
+      <text x="495" y="522" text-anchor="middle" font-size="9" fill="#6366f1">OpenAI</text>
+
+      <rect x="532" y="492" width="198" height="80" rx="11" fill="#ecfbff" stroke="#cbeaf5"/>
+      <text x="631" y="516" text-anchor="middle" font-size="11.5" font-weight="600" fill="#0e7490">OpenRouter</text>
+      <text x="631" y="535" text-anchor="middle" font-size="9.5" fill="#0e7490">/api/v1/chat/completions</text>
+      <text x="631" y="550" text-anchor="middle" font-size="9.5" fill="#0e7490">one key &rarr; four vendors</text>
+      <text x="631" y="565" text-anchor="middle" font-size="9.5" fill="#0e7490">routes, does not infer</text>
+
+      <path d="M730 532 L792 532" stroke="#6366f1" stroke-width="1.8" fill="none" marker-end="url(#arA)"/>
+      <text x="761" y="522" text-anchor="middle" font-size="9" fill="#6366f1">native</text>
+
+      <rect x="798" y="492" width="198" height="80" rx="11" fill="#f7f8fa" stroke="#e7e9ee"/>
+      <text x="897" y="516" text-anchor="middle" font-size="11.5" font-weight="600" fill="#344054">Model provider</text>
+      <text x="897" y="535" text-anchor="middle" font-size="9.5" fill="#667085">NVIDIA · Google</text>
+      <text x="897" y="550" text-anchor="middle" font-size="9.5" fill="#667085">DeepSeek · MiniMax</text>
+      <text x="897" y="565" text-anchor="middle" font-size="9.5" fill="#667085">never sees your key</text>
+
+      <!-- mapping band -->
+      <rect x="0" y="594" width="996" height="196" rx="11" fill="#fcfcfd" stroke="#e7e9ee"/>
+      <text x="20" y="617" font-size="10.5" font-weight="700" fill="#101828">WHAT THE TRANSLATION CHANGES &mdash; the same adapter, run in both directions</text>
+      <line x1="498" y1="630" x2="498" y2="776" stroke="#e7e9ee"/>
+
+      <text x="20" y="644" font-size="10" font-weight="600" fill="#3730a3">Anthropic &rarr; OpenAI (out)</text>
+      <text x="20" y="666" font-size="9.5" fill="#344054"><tspan class="mono">system</tspan> field &rarr; leading <tspan class="mono">system</tspan> message</text>
+      <text x="20" y="685" font-size="9.5" fill="#344054">typed content blocks &rarr; OpenAI content parts</text>
+      <text x="20" y="704" font-size="9.5" fill="#344054"><tspan class="mono">tools[].input_schema</tspan> &rarr; <tspan class="mono">function.parameters</tspan></text>
+      <text x="20" y="723" font-size="9.5" fill="#344054"><tspan class="mono">tool_result</tspan> block &rarr; <tspan class="mono">role:"tool"</tspan> message</text>
+      <text x="20" y="742" font-size="9.5" fill="#344054"><tspan class="mono">max_tokens</tspan>, <tspan class="mono">stop_sequences</tspan> &rarr; OpenAI equivalents</text>
+      <text x="20" y="763" font-size="9.5" fill="#b42318">Anthropic-only params (<tspan class="mono">output_config</tspan>, thinking)</text>
+      <text x="20" y="778" font-size="9.5" fill="#b42318">&rarr; <tspan font-weight="600">dropped</tspan>, or the provider 400s the request</text>
+
+      <text x="518" y="644" font-size="10" font-weight="600" fill="#0e7490">OpenAI &rarr; Anthropic (back)</text>
+      <text x="518" y="666" font-size="9.5" fill="#344054">stream envelope &rarr; <tspan class="mono">message_start &hellip; message_stop</tspan></text>
+      <text x="518" y="685" font-size="9.5" fill="#344054"><tspan class="mono">delta.content</tspan> &rarr; <tspan class="mono">content_block_delta / text_delta</tspan></text>
+      <text x="518" y="704" font-size="9.5" fill="#344054"><tspan class="mono">delta.tool_calls[].arguments</tspan> &rarr; <tspan class="mono">input_json_delta</tspan></text>
+      <text x="518" y="723" font-size="9.5" fill="#344054"><tspan class="mono">finish_reason: tool_calls</tspan> &rarr; <tspan class="mono">stop_reason: tool_use</tspan></text>
+      <text x="518" y="742" font-size="9.5" fill="#344054"><tspan class="mono">usage.prompt/completion_tokens</tspan> &rarr; <tspan class="mono">input/output_tokens</tspan></text>
+      <text x="518" y="763" font-size="9.5" fill="#b45309"><tspan class="mono">cache_read_input_tokens: 0</tspan> &mdash; no cache concept</text>
+      <text x="518" y="778" font-size="9.5" fill="#b45309">upstream, so prompt caching is lost on these routes</text>
+
+      <!-- response row -->
+      <text x="0" y="816" font-size="10" font-weight="700" fill="#0e7490">RESPONSE &mdash; inbound, same path in reverse</text>
+
+      <rect x="0" y="828" width="198" height="46" rx="10" fill="#eef1fe" stroke="#c7cdfb"/>
+      <text x="99" y="847" text-anchor="middle" font-size="10.5" font-weight="600" fill="#3730a3">Anthropic SSE</text>
+      <text x="99" y="864" text-anchor="middle" font-size="9" fill="#b45309">no <tspan class="mono">ping</tspan> event &mdash; untested risk</text>
+
+      <path d="M260 851 L198 851" stroke="#0e7490" stroke-width="1.8" fill="none" marker-end="url(#arC)"/>
+
+      <rect x="266" y="828" width="198" height="46" rx="10" fill="#fff" stroke="#cbeaf5" stroke-width="1.4"/>
+      <text x="365" y="847" text-anchor="middle" font-size="10.5" font-weight="600" fill="#0e7490">re-assemble + price</text>
+      <text x="365" y="864" text-anchor="middle" font-size="9" fill="#667085">chunks &rarr; events · spend · capture</text>
+
+      <path d="M526 851 L464 851" stroke="#0e7490" stroke-width="1.8" fill="none" marker-end="url(#arC)"/>
+
+      <rect x="532" y="828" width="198" height="46" rx="10" fill="#ecfbff" stroke="#cbeaf5"/>
+      <text x="631" y="847" text-anchor="middle" font-size="10.5" font-weight="600" fill="#0e7490">OpenAI-format chunks</text>
+      <text x="631" y="864" text-anchor="middle" font-size="9" fill="#0e7490">relayed unchanged, plus its own usage</text>
+
+      <path d="M792 851 L730 851" stroke="#0e7490" stroke-width="1.8" fill="none" marker-end="url(#arC)"/>
+
+      <rect x="798" y="828" width="198" height="46" rx="10" fill="#f7f8fa" stroke="#e7e9ee"/>
+      <text x="897" y="847" text-anchor="middle" font-size="10.5" font-weight="600" fill="#344054">provider tokens</text>
+      <text x="897" y="864" text-anchor="middle" font-size="9" fill="#667085">native stream, no Anthropic notion</text>
+    </svg>
+    </div>
+  </div>
+
+  <div class="wh">
+    <div class="card what">
+      <h3>What</h3>
+<p><b>A gateway we operate, sitting between Emumba developers' Claude Code and the model
+ provider.</b> Without it, traffic goes straight to Anthropic: nothing is recorded, spend is a single
+ shared pool, and every laptop holds a real provider key.</p>
+ <p>With it, four properties hold at once — <b>capture</b> (every request and response recorded, and
+ impossible to bypass), <b>attribution</b> (spend tied to a named developer), <b>budget control</b>
+ (a per-developer ceiling the gateway enforces itself), and <b>credential containment</b> (the real
+ provider key never reaches a laptop).</p>
+ <p>Row C is the same picture with a non-Anthropic model behind it: the client is unchanged and the
+ provider never sees an Anthropic body, so budgets, capture and attribution are identical on every route.</p>
+    </div>
+    <div class="card how">
+      <h3>How</h3>
+<p><b>LiteLLM Proxy Server plus PostgreSQL, run with Docker Compose.</b> Claude Code is simply told
+ a different address — nothing is patched, reverse-engineered or MITM'd at the TLS layer.</p>
+ <ul>
+   <li><b>Client configuration is two environment variables</b> — <code>ANTHROPIC_BASE_URL</code> and
+       <code>ANTHROPIC_AUTH_TOKEN</code>. No certificates, no modified binary.</li>
+   <li><b>Services:</b> <code>litellm</code> (the proxy, port 4000), <code>postgres</code> (keys,
+       budgets, spend), <code>picker-shim</code> (nginx on 4001, desktop-app labels).</li>
+   <li><b>Code written for the PoC:</b> <code>custom_capture.py</code> (capture + modification hooks),
+       <code>run_checks.py</code> (16-point fidelity harness), <code>stub_upstream.py</code> (zero-cost
+       fake provider), <code>capture-tap/tap.py</code>, <code>claude-gw.sh</code> (validating launcher).</li>
+   <li><b>Why it cannot be bypassed:</b> traffic must traverse the gateway to work at all — verified by
+       stopping the proxy, at which point Claude Code fails outright.</li>
+   <li><code>drop_params: false</code> is set globally on purpose, so LiteLLM never silently discards
+       request fields it does not recognise.</li>
+ </ul>
+    </div>
+  </div>
+</section>
+
+<section id="gates">
+  <div class="sec-head">
+    <span class="sec-num">02</span>
+    <h2 class="sec-title">Budgets and model access — three gates before the provider</h2>
+  </div>
+
+  <div class="fig">
+    <div class="fig-cap"><b>Figure 2</b><span>The three enforcement gates — each one verified live</span></div>
+    <div class="scroller">
+<svg viewBox="0 0 1000 296" role="img" aria-label="Request passes three gates before the provider is called" style="min-width:760px">
+      <defs>
+        <marker id="ar2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M0 0 L10 5 L0 10 z" fill="#6366f1"/>
+        </marker>
+        <marker id="ar2r" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M0 0 L10 5 L0 10 z" fill="#f04438"/>
+        </marker>
+      </defs>
+
+      <!-- main chain -->
+      <rect x="0" y="60" width="145" height="66" rx="11" fill="#fff2cc" stroke="#e8c96b"/>
+      <text x="72" y="88" text-anchor="middle" font-size="11.5" font-weight="600" fill="#7f6000">Request +</text>
+      <text x="72" y="104" text-anchor="middle" font-size="11.5" font-weight="600" fill="#7f6000">virtual key</text>
+
+      <rect x="171" y="60" width="145" height="66" rx="11" fill="#f6f7ff" stroke="#c7cdfa" stroke-width="1.4"/>
+      <text x="243" y="84" text-anchor="middle" font-size="11.5" font-weight="600" fill="#3730a3">Gate 1</text>
+      <text x="243" y="102" text-anchor="middle" font-size="10.5" fill="#4f46e5">Is the key valid?</text>
+
+      <rect x="342" y="60" width="145" height="66" rx="11" fill="#f6f7ff" stroke="#c7cdfa" stroke-width="1.4"/>
+      <text x="414" y="84" text-anchor="middle" font-size="11.5" font-weight="600" fill="#3730a3">Gate 2</text>
+      <text x="414" y="102" text-anchor="middle" font-size="10.5" fill="#4f46e5">Model allowed?</text>
+
+      <rect x="513" y="60" width="145" height="66" rx="11" fill="#f6f7ff" stroke="#c7cdfa" stroke-width="1.4"/>
+      <text x="585" y="84" text-anchor="middle" font-size="11.5" font-weight="600" fill="#3730a3">Gate 3</text>
+      <text x="585" y="102" text-anchor="middle" font-size="10.5" fill="#4f46e5">Within budget?</text>
+
+      <rect x="684" y="60" width="145" height="66" rx="11" fill="#eef1fe" stroke="#4f46e5" stroke-width="1.4"/>
+      <text x="756" y="88" text-anchor="middle" font-size="11.5" font-weight="600" fill="#3730a3">Swap in the</text>
+      <text x="756" y="104" text-anchor="middle" font-size="11.5" font-weight="600" fill="#3730a3">REAL key</text>
+
+      <rect x="855" y="60" width="145" height="66" rx="11" fill="#ecfbff" stroke="#cbeaf5"/>
+      <text x="927" y="88" text-anchor="middle" font-size="11.5" font-weight="600" fill="#0e7490">Provider</text>
+      <text x="927" y="104" text-anchor="middle" font-size="10.5" fill="#0e7490">billed from here</text>
+
+      <line x1="147" y1="93" x2="167" y2="93" stroke="#6366f1" stroke-width="1.7" marker-end="url(#ar2)"/>
+      <line x1="318" y1="93" x2="338" y2="93" stroke="#6366f1" stroke-width="1.7" marker-end="url(#ar2)"/>
+      <line x1="489" y1="93" x2="509" y2="93" stroke="#6366f1" stroke-width="1.7" marker-end="url(#ar2)"/>
+      <line x1="660" y1="93" x2="680" y2="93" stroke="#6366f1" stroke-width="1.7" marker-end="url(#ar2)"/>
+      <line x1="831" y1="93" x2="851" y2="93" stroke="#6366f1" stroke-width="1.7" marker-end="url(#ar2)"/>
+
+      <!-- failure exits -->
+      <line x1="243" y1="128" x2="243" y2="176" stroke="#f04438" stroke-width="1.5" stroke-dasharray="4 3" marker-end="url(#ar2r)"/>
+      <line x1="414" y1="128" x2="414" y2="176" stroke="#f04438" stroke-width="1.5" stroke-dasharray="4 3" marker-end="url(#ar2r)"/>
+      <line x1="585" y1="128" x2="585" y2="176" stroke="#f04438" stroke-width="1.5" stroke-dasharray="4 3" marker-end="url(#ar2r)"/>
+
+      <rect x="171" y="180" width="145" height="58" rx="10" fill="#fef3f2" stroke="#fecdca"/>
+      <text x="243" y="202" text-anchor="middle" font-size="11.5" font-weight="700" fill="#b42318">401</text>
+      <text x="243" y="220" text-anchor="middle" font-size="10" fill="#912018">unknown key</text>
+
+      <rect x="342" y="180" width="145" height="58" rx="10" fill="#fef3f2" stroke="#fecdca"/>
+      <text x="414" y="202" text-anchor="middle" font-size="11.5" font-weight="700" fill="#b42318">403</text>
+      <text x="414" y="220" text-anchor="middle" font-size="10" fill="#912018">model not allowed</text>
+
+      <rect x="513" y="180" width="145" height="58" rx="10" fill="#fef3f2" stroke="#fecdca"/>
+      <text x="585" y="202" text-anchor="middle" font-size="11.5" font-weight="700" fill="#b42318">429</text>
+      <text x="585" y="220" text-anchor="middle" font-size="10" fill="#912018">budget exceeded</text>
+
+      <rect x="684" y="180" width="316" height="58" rx="10" fill="#ecfdf3" stroke="#abefc6"/>
+      <text x="702" y="202" font-size="11" font-weight="600" fill="#067647">A refused call costs nothing.</text>
+      <text x="702" y="220" font-size="10.5" fill="#05603a">13 refused requests logged 0 tokens and $0.</text>
+
+      <text x="0" y="270" font-size="10.5" fill="#667085">If a gate fails the request stops there — the provider is never called, so nothing is billed. All three refusals were reproduced on the running stack.</text>
+    </svg>
+    </div>
+  </div>
+
+  <div class="wh">
+    <div class="card what">
+      <h3>What</h3>
+<p><b>Every request passes three checks before a provider is ever called:</b> is the virtual key
+ valid (<code>401</code>), is this model allowed for this key (<code>403</code>), and is the key within
+ budget (<code>429</code>).</p>
+ <p>Because all three are decided locally, <b>a refused call costs nothing</b> — 13 refused requests
+ logged 0 tokens and $0. The refusal wording is LiteLLM's own, which is the proof the gateway inspected
+ and refused the request itself rather than relaying an Anthropic error.</p>
+    </div>
+    <div class="card how">
+      <h3>How</h3>
+<ul>
+   <li><b>Budget:</b> <code>max_budget</code> and <code>budget_duration</code> live in the credential's
+       own PostgreSQL row; the auth layer compares accrued spend against the ceiling on every request —
+       a local database read, no network call. Budgets can sit at four levels (Organization → Team →
+       Internal User → Virtual Key) and the most restrictive wins.</li>
+   <li><b>Model list:</b> a <code>models</code> allowlist on the virtual key and/or
+       <em>Personal Models</em> on the Internal User. Changes apply in place via
+       <code>POST /key/update</code> — key string, budget and accrued spend untouched.</li>
+   <li><b>Put the cap on the Internal User, not the key</b>, so it follows the person across every
+       credential they hold; always set <code>budget_duration: monthly</code>, or the budget never
+       refills and the key dies permanently.</li>
+   <li><b>Scope to a set of models, never one</b> — Claude Code needs a Haiku-class model for background
+       traffic as well as the one the developer picked.</li>
+ </ul>
+ <p class="note amber"><b>Two behaviours to plan around.</b> The budget is a brake, not a hard cap — the
+ crossing request always completes, because price is only known after the call (measured overshoot: 12%
+ on a realistic budget, 29× on a deliberately tiny one). And over-budget returns <code>429</code> from
+ the auth layer, which blocks every route including <code>/v1/models</code>; Claude Code cannot tell it
+ apart from a rate limit, so it needs a support runbook before rollout.</p>
+    </div>
+  </div>
+</section>
+
+<section id="credentials">
+  <div class="sec-head">
+    <span class="sec-num">03</span>
+    <h2 class="sec-title">Credential containment — the real key never leaves the server</h2>
+  </div>
+
+  <div class="fig">
+    <div class="fig-cap"><b>Figure 3</b><span>The credential swap — the trust boundary is the design</span></div>
+    <div class="scroller">
+<svg viewBox="0 0 1000 250" role="img" aria-label="Virtual key on the laptop is swapped for the real provider key inside the gateway" style="min-width:720px">
+      <defs>
+        <marker id="ar3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M0 0 L10 5 L0 10 z" fill="#6366f1"/>
+        </marker>
+      </defs>
+
+      <!-- zones -->
+      <rect x="0" y="26" width="248" height="160" rx="14" fill="#fffbf0" stroke="#e8c96b" stroke-dasharray="6 4"/>
+      <text x="124" y="48" text-anchor="middle" font-size="10.5" font-weight="700" letter-spacing="0.08em" fill="#b45309">UNTRUSTED — LAPTOP</text>
+
+      <rect x="292" y="26" width="384" height="160" rx="14" fill="#f6f7ff" stroke="#4f46e5" stroke-width="1.5"/>
+      <text x="484" y="48" text-anchor="middle" font-size="10.5" font-weight="700" letter-spacing="0.08em" fill="#3730a3">TRUSTED — GATEWAY HOST</text>
+
+      <rect x="720" y="26" width="280" height="160" rx="14" fill="#f7fdff" stroke="#cbeaf5" stroke-dasharray="6 4"/>
+      <text x="860" y="48" text-anchor="middle" font-size="10.5" font-weight="700" letter-spacing="0.08em" fill="#0e7490">PROVIDER</text>
+
+      <!-- laptop key -->
+      <rect x="20" y="72" width="208" height="92" rx="11" fill="#fff2cc" stroke="#e8c96b"/>
+      <text x="124" y="98" text-anchor="middle" font-size="12" font-weight="600" fill="#7f6000">VIRTUAL key</text>
+      <text x="124" y="118" text-anchor="middle" font-size="10.5" fill="#7f6000" class="mono">sk-&hellip;</text>
+      <text x="124" y="138" text-anchor="middle" font-size="10.5" fill="#7f6000">useless off our network</text>
+      <text x="124" y="154" text-anchor="middle" font-size="10.5" fill="#7f6000">revoke = one DB row</text>
+
+      <!-- gateway internals -->
+      <rect x="312" y="72" width="164" height="92" rx="11" fill="#eef1fe" stroke="#c7cdfa"/>
+      <text x="394" y="98" text-anchor="middle" font-size="11.5" font-weight="600" fill="#3730a3">Checks pass</text>
+      <text x="394" y="118" text-anchor="middle" font-size="10.5" fill="#4f46e5">discard the</text>
+      <text x="394" y="134" text-anchor="middle" font-size="10.5" fill="#4f46e5">virtual key,</text>
+      <text x="394" y="150" text-anchor="middle" font-size="10.5" fill="#4f46e5">attach the real one</text>
+
+      <rect x="500" y="72" width="158" height="92" rx="11" fill="#fef3f2" stroke="#fecdca"/>
+      <text x="579" y="98" text-anchor="middle" font-size="12" font-weight="600" fill="#b42318">REAL key</text>
+      <text x="579" y="118" text-anchor="middle" font-size="9.5" fill="#912018" class="mono">ANTHROPIC_API_KEY</text>
+      <text x="579" y="140" text-anchor="middle" font-size="10.5" fill="#912018">never sent</text>
+      <text x="579" y="155" text-anchor="middle" font-size="10.5" fill="#912018">to a laptop</text>
+
+      <line x1="500" y1="118" x2="482" y2="118" stroke="#b42318" stroke-width="1.4" stroke-dasharray="4 3"/>
+
+      <!-- provider -->
+      <rect x="740" y="72" width="240" height="92" rx="11" fill="#ecfbff" stroke="#cbeaf5"/>
+      <text x="860" y="104" text-anchor="middle" font-size="12" font-weight="600" fill="#0e7490">api.anthropic.com</text>
+      <text x="860" y="126" text-anchor="middle" font-size="10.5" fill="#0e7490">sees only the real key —</text>
+      <text x="860" y="142" text-anchor="middle" font-size="10.5" fill="#0e7490">never a developer's</text>
+
+      <!-- arrows -->
+      <line x1="230" y1="118" x2="308" y2="118" stroke="#6366f1" stroke-width="1.7" marker-end="url(#ar3)"/>
+      <line x1="662" y1="118" x2="736" y2="118" stroke="#6366f1" stroke-width="1.7" marker-end="url(#ar3)"/>
+
+      <!-- spend -->
+      <rect x="292" y="200" width="384" height="42" rx="10" fill="#ecfdf3" stroke="#abefc6"/>
+      <text x="484" y="226" text-anchor="middle" font-size="11" font-weight="600" fill="#067647">Spend is recorded against the VIRTUAL key &nbsp;→&nbsp; attribution per developer</text>
+      <line x1="484" y1="186" x2="484" y2="196" stroke="#17b26a" stroke-width="1.5"/>
+    </svg>
+    </div>
+  </div>
+
+  <div class="wh">
+    <div class="card what">
+      <h3>What</h3>
+<p><b>Anthropic only ever sees the real key, developers only ever hold a virtual key, and spend is
+ recorded against the virtual key</b> — so we get attribution and enforcement without ever distributing
+ the real credential.</p>
+ <p>Revoking a developer is one database row. No key rotation, no redeployment across laptops. A leaked
+ virtual key is worthless off our network.</p>
+    </div>
+    <div class="card how">
+      <h3>How</h3>
+<ul>
+   <li><b>The real <code>ANTHROPIC_API_KEY</code> lives only on the gateway host</b>, in the container's
+       environment. It is substituted into the outbound request after all three gates have passed.</li>
+   <li><b>Virtual keys are minted per developer</b> with <code>POST /key/generate</code>, carrying their
+       own <code>models</code> allowlist, <code>max_budget</code> and a
+       <code>metadata.developer</code> tag for attribution.</li>
+   <li><b>Four credentials exist</b>, in descending blast radius: the provider key (gateway host only),
+       <code>LITELLM_MASTER_KEY</code> (administrator — mints keys and can read every captured prompt),
+       the per-developer virtual keys, and the PostgreSQL user (internal only).</li>
+   <li><code>unset ANTHROPIC_API_KEY</code> is <b>not optional</b> on the client — a real key still in the
+       environment is sent as <code>x-api-key</code> and wins over <code>ANTHROPIC_AUTH_TOKEN</code>.
+       <code>claude-gw.sh</code> launches through <code>env -u ANTHROPIC_API_KEY</code> to make that
+       mistake impossible.</li>
+ </ul>
+    </div>
+  </div>
+</section>
+
+<section id="modify">
+  <div class="sec-head">
+    <span class="sec-num">04</span>
+    <h2 class="sec-title">Modifying the request in flight — clamp and redaction</h2>
+  </div>
+
+  <div class="fig">
+    <div class="fig-cap"><b>Figure 8</b><span>Where request modification happens — the pre-call hook</span></div>
+    <div class="scroller">
+<svg viewBox="0 0 1000 300" role="img" aria-label="The pre-call hook modifies the request body before the provider is called" style="min-width:760px">
+      <defs>
+        <marker id="ar5" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M0 0 L10 5 L0 10 z" fill="#6366f1"/>
+        </marker>
+        <marker id="ar5g" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M0 0 L10 5 L0 10 z" fill="#17b26a"/>
+        </marker>
+      </defs>
+
+      <rect x="0" y="60" width="150" height="70" rx="11" fill="#fff2cc" stroke="#e8c96b"/>
+      <text x="75" y="88" text-anchor="middle" font-size="11.5" font-weight="600" fill="#7f6000">Claude Code</text>
+      <text x="75" y="106" text-anchor="middle" font-size="10" fill="#7f6000">max_tokens: 32000</text>
+      <text x="75" y="121" text-anchor="middle" font-size="10" fill="#7f6000">+ a leaked key in a file</text>
+
+      <line x1="152" y1="95" x2="192" y2="95" stroke="#6366f1" stroke-width="1.7" marker-end="url(#ar5)"/>
+
+      <rect x="196" y="30" width="330" height="130" rx="13" fill="#f6f7ff" stroke="#4f46e5" stroke-width="1.6"/>
+      <text x="361" y="52" text-anchor="middle" font-size="10" font-weight="700" letter-spacing="0.07em" fill="#3730a3">async_pre_call_hook</text>
+      <text x="361" y="68" text-anchor="middle" font-size="9.5" fill="#667085">call_type = "anthropic_messages"</text>
+
+      <rect x="212" y="78" width="298" height="32" rx="8" fill="#eef1fe" stroke="#dfe3fd"/>
+      <text x="226" y="98" font-size="10.5" font-weight="600" fill="#3730a3">1 &nbsp;clamp max_tokens &nbsp;32000 &rarr; 8000</text>
+      <rect x="212" y="116" width="298" height="32" rx="8" fill="#eef1fe" stroke="#dfe3fd"/>
+      <text x="226" y="136" font-size="10.5" font-weight="600" fill="#3730a3">2 &nbsp;redact secrets &rarr; [REDACTED:kind]</text>
+
+      <line x1="528" y1="95" x2="568" y2="95" stroke="#6366f1" stroke-width="1.7" marker-end="url(#ar5)"/>
+      <text x="548" y="86" text-anchor="middle" font-size="9" fill="#6366f1" font-weight="600">modified</text>
+
+      <rect x="572" y="60" width="188" height="70" rx="11" fill="#ecfbff" stroke="#cbeaf5"/>
+      <text x="666" y="88" text-anchor="middle" font-size="11.5" font-weight="600" fill="#0e7490">Provider</text>
+      <text x="666" y="108" text-anchor="middle" font-size="10" fill="#0e7490">never sees the key,</text>
+      <text x="666" y="123" text-anchor="middle" font-size="10" fill="#0e7490">never sees 32000</text>
+
+      <!-- audit -->
+      <path d="M361 160 L361 190 L500 190 L500 212" stroke="#17b26a" stroke-width="1.6" fill="none" marker-end="url(#ar5g)"/>
+      <rect x="330" y="216" width="340" height="56" rx="11" fill="#ecfdf3" stroke="#abefc6"/>
+      <text x="348" y="238" font-size="11" font-weight="600" fill="#067647">capture/modifications.jsonl</text>
+      <text x="348" y="256" font-size="10" fill="#05603a">the KIND of secret and the count &mdash; never the value</text>
+
+      <!-- fail-open -->
+      <rect x="776" y="46" width="224" height="98" rx="11" fill="#fdf7ed" stroke="#f2e4cd"/>
+      <text x="792" y="68" font-size="10.5" font-weight="700" fill="#b45309">FAILS OPEN</text>
+      <text x="792" y="88" font-size="10" fill="#7c4a08">Any error here forwards the</text>
+      <text x="792" y="103" font-size="10" fill="#7c4a08">body unmodified. A missed</text>
+      <text x="792" y="118" font-size="10" fill="#7c4a08">redaction is a gap; a gateway</text>
+      <text x="792" y="133" font-size="10" fill="#7c4a08">refusing all traffic is an outage.</text>
+
+      <text x="0" y="240" font-size="10.5" font-weight="600" fill="#101828">Verified both</text>
+      <text x="0" y="256" font-size="10.5" font-weight="600" fill="#101828">directions:</text>
+      <text x="0" y="274" font-size="10" fill="#b42318">clamp off &rarr; 402 fail</text>
+      <text x="160" y="274" font-size="10" fill="#067647">clamp on &rarr; OK</text>
+    </svg>
+    </div>
+  </div>
+
+  <div class="wh">
+    <div class="card what">
+      <h3>What</h3>
+<p><b>The gateway changes traffic, not only records it.</b> This is the highest-value control-plane
+ capability of the five: it moves enforcement from credentials and cost onto <em>content</em>.</p>
+ <p>Two behaviours ship, both individually switchable and both fail-open:</p>
+ <ul>
+   <li><b>A <code>max_tokens</code> clamp</b>, on by default, ceiling 8,000. Claude Code reserves 32,000
+       output tokens on every request and providers gate on the <em>reservation</em>, so a 60-token reply
+       gets refused with a <code>402</code>. The CLI can be fixed with an environment variable;
+       <b>the desktop app cannot</b> — so server-side is the only place that fixes every client at once.</li>
+   <li><b>Secret redaction</b>, off by default. High-specificity credential patterns in outbound message
+       content are replaced before the request leaves our network.</li>
+ </ul>
+    </div>
+    <div class="card how">
+      <h3>How</h3>
+<ul>
+   <li>LiteLLM's <code>CustomLogger</code> exposes
+       <code>async_pre_call_hook(user_api_key_dict, cache, data, call_type)</code>; returning a
+       <code>dict</code> replaces the body that gets forwarded. <code>custom_capture.py</code> already
+       subclassed <code>CustomLogger</code> and was already registered — <b>this was one method on an
+       object the proxy was already loading</b>. No new wiring.</li>
+   <li><b>The hook does fire on <code>/v1/messages</code></b> — read from the installed source:
+       <code>anthropic_endpoints/endpoints.py:101</code> dispatches through
+       <code>base_process_llm_request(route_type="anthropic_messages")</code>, and
+       <code>common_request_processing.py:1518</code> awaits <code>pre_call_hook</code> and assigns the
+       result back.</li>
+   <li><b>The exempt list matches exactly, never by prefix</b> —
+       <code>claude-haiku-4-5-gmn-37-flash</code> is a picker alias for Gemini and starts with
+       <code>claude-haiku-4-5</code>, so prefix matching would silently exempt every translated route.</li>
+   <li><b>Redaction touches <code>messages</code> only</b>, never <code>system</code> or
+       <code>tools</code> — those are the cacheable prefix. <code>tool_result</code> blocks <em>are</em>
+       walked; that is where a committed credential actually surfaces. Replacements are deterministic, so
+       the cached prefix does not change between turns.</li>
+   <li><b>Audit trail:</b> every modification appends one line to
+       <code>capture/modifications.jsonl</code> recording the <em>kind</em> of secret and the count,
+       attributed to a named key — <b>never the value</b>.</li>
+ </ul>
+ <p class="note amber"><b>Fail-open, deliberately.</b> The hook runs in front of every request, so both
+ behaviours fall through to the unmodified body on any error. A modification we failed to apply is a gap;
+ a gateway that refuses all traffic is an outage. That trade is right for a PoC, but it means
+ <b>redaction is best-effort, not a guarantee</b>, and must not be described as a control that cannot
+ fail.</p>
+    </div>
+  </div>
+</section>
+
+<section id="skills">
+  <div class="sec-head">
+    <span class="sec-num">05</span>
+    <h2 class="sec-title">Skill distribution — two paths from one file</h2>
+  </div>
+
+  <div class="fig">
+    <div class="fig-cap"><b>Figure 14</b><span>How a skill reaches the model — two paths from one file</span></div>
+    <div class="scroller">
+<svg viewBox="0 0 1000 590" role="img" aria-label="Setup happens once, by an admin: the plugin is authored in the control-plane repo with a flat skills layout and a plugin.json manifest, pushed to the testing-skills git repository on its default branch, registered in LiteLLM with a POST to slash claude-code slash plugins, served to developers as an unauthenticated marketplace.json, and installed by each developer with claude plugin marketplace add followed by claude plugin install. Claude Code clones from GitHub directly; the gateway serves only metadata, never file content. At runtime, on every request, the Claude Code session posts to the gateway, whose pre-call hook runs skill injection as step four: it matches a trigger regular expression against recent conversation text with the system-reminder blocks stripped out, and in the default installed mode also checks, against the unstripped text, that the plugin appears in the skill catalogue Claude Code sends inside a system-reminder; it then appends the skill body to the system field after the cache control breakpoint, capped at twenty thousand characters per skill. Four skills across two plugins are wired this way. The provider or model then answers, producing a review that cites the specific rules, and the injection is recorded to modifications.jsonl. Both paths read the same SKILL.md: path one is Claude Code's own Skill tool, sourced from the cloned plugin on disk, whose activation is the model's choice and was observed to work on Sonnet but not Haiku. Path two is gateway injection, sourced from the same file volume-mounted into the container, which applies unconditionally once the trigger matches and works even on a local 8B model." style="min-width:960px">
+      <defs>
+        <marker id="arS" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M0 0 L10 5 L0 10 z" fill="#6366f1"/>
+        </marker>
+        <marker id="arSg" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M0 0 L10 5 L0 10 z" fill="#067647"/>
+        </marker>
+        <marker id="arSn" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M0 0 L10 5 L0 10 z" fill="#98a2b3"/>
+        </marker>
+      </defs>
+
+      <!-- ============ BAND 1 : SETUP ============ -->
+      <text x="0" y="13" font-size="11" font-weight="600" letter-spacing="0.09em" fill="#4f46e5">SETUP &#8212; ONCE, BY AN ADMIN</text>
+      <line x1="0" y1="23" x2="1000" y2="23" stroke="#e7e9ee"/>
+
+      <!-- A : author -->
+      <rect x="2" y="38" width="178" height="100" rx="12" fill="#fff" stroke="#d5d9e2" stroke-width="1.5"/>
+      <text x="91" y="60" text-anchor="middle" font-size="11.5" font-weight="600" fill="#101828">&#9312;&nbsp; Author the plugin</text>
+      <text x="91" y="79" text-anchor="middle" font-size="8.5" class="mono" fill="#3730a3">plugins/emumba-react|-backend/</text>
+      <text x="91" y="97" text-anchor="middle" font-size="8.5" fill="#667085">skills/&lt;name&gt;/SKILL.md</text>
+      <text x="91" y="110" text-anchor="middle" font-size="8.5" font-weight="700" fill="#b54708">flat layout, not by category</text>
+      <text x="91" y="127" text-anchor="middle" font-size="8.5" fill="#667085">+ .claude-plugin/plugin.json</text>
+
+      <line x1="182" y1="88" x2="202" y2="88" stroke="#6366f1" stroke-width="1.7" marker-end="url(#arS)"/>
+
+      <!-- B : git -->
+      <rect x="206" y="38" width="170" height="100" rx="12" fill="#fff" stroke="#d5d9e2" stroke-width="1.5"/>
+      <text x="291" y="60" text-anchor="middle" font-size="11.5" font-weight="600" fill="#101828">&#9313;&nbsp; Push to git</text>
+      <text x="291" y="80" text-anchor="middle" font-size="8.5" class="mono" fill="#3730a3">testing-skills.git</text>
+      <text x="291" y="99" text-anchor="middle" font-size="8.5" fill="#667085">default branch only &#8212; the</text>
+      <text x="291" y="112" text-anchor="middle" font-size="8.5" fill="#667085">source schema has no ref field</text>
+      <text x="291" y="129" text-anchor="middle" font-size="8.5" font-weight="700" fill="#b54708">use the url form, not github</text>
+
+      <line x1="378" y1="88" x2="398" y2="88" stroke="#6366f1" stroke-width="1.7" marker-end="url(#arS)"/>
+
+      <!-- C : register -->
+      <rect x="402" y="38" width="196" height="100" rx="12" fill="#f6f7ff" stroke="#c7cdfa" stroke-width="1.5"/>
+      <text x="500" y="60" text-anchor="middle" font-size="11.5" font-weight="600" fill="#3730a3">&#9314;&nbsp; Register in LiteLLM</text>
+      <text x="500" y="80" text-anchor="middle" font-size="8.5" class="mono" fill="#3730a3">POST /claude-code/plugins</text>
+      <text x="500" y="99" text-anchor="middle" font-size="8.5" fill="#667085">the UI <tspan font-style="italic">Skills</tspan> page writes</text>
+      <text x="500" y="112" text-anchor="middle" font-size="8.5" fill="#667085">the same row &#8212; metadata only</text>
+      <text x="500" y="129" text-anchor="middle" font-size="8.5" font-weight="700" fill="#b54708">no team_id &#183; no key scoping</text>
+
+      <line x1="600" y1="88" x2="620" y2="88" stroke="#6366f1" stroke-width="1.7" marker-end="url(#arS)"/>
+
+      <!-- D : catalogue -->
+      <rect x="624" y="38" width="150" height="100" rx="12" fill="#f6f7ff" stroke="#c7cdfa" stroke-width="1.5"/>
+      <text x="699" y="60" text-anchor="middle" font-size="11.5" font-weight="600" fill="#3730a3">&#9315;&nbsp; Catalogue served</text>
+      <text x="699" y="79" text-anchor="middle" font-size="8" class="mono" fill="#3730a3">GET /claude-code/</text>
+      <text x="699" y="91" text-anchor="middle" font-size="8" class="mono" fill="#3730a3">marketplace.json</text>
+      <text x="699" y="110" text-anchor="middle" font-size="8.5" font-weight="700" fill="#b54708">no authentication</text>
+      <text x="699" y="127" text-anchor="middle" font-size="8.5" fill="#667085">visible to everyone</text>
+
+      <line x1="776" y1="88" x2="796" y2="88" stroke="#6366f1" stroke-width="1.7" marker-end="url(#arS)"/>
+
+      <!-- E : install -->
+      <rect x="800" y="38" width="198" height="100" rx="12" fill="#fff2cc" stroke="#e8c96b" stroke-width="1.5"/>
+      <text x="899" y="60" text-anchor="middle" font-size="11.5" font-weight="600" fill="#7f6000">&#9316;&nbsp; Developer installs</text>
+      <text x="899" y="79" text-anchor="middle" font-size="7.5" class="mono" fill="#7f6000">claude plugin marketplace add &#8230;</text>
+      <text x="899" y="93" text-anchor="middle" font-size="7.5" class="mono" fill="#7f6000">claude plugin install emumba-react@litellm</text>
+      <text x="899" y="112" text-anchor="middle" font-size="8.5" fill="#a17d13">lands in ~/.claude/plugins/cache/</text>
+      <text x="899" y="129" text-anchor="middle" font-size="8.5" font-weight="700" fill="#b54708">no install telemetry</text>
+
+      <!-- clone-direct dashed loop -->
+      <path d="M899 140 L899 158 L291 158 L291 142" fill="none" stroke="#98a2b3" stroke-width="1.5" stroke-dasharray="5 3" marker-end="url(#arSn)"/>
+      <rect x="358" y="148" width="484" height="19" rx="5" fill="#fff" stroke="none"/>
+      <text x="600" y="162" text-anchor="middle" font-size="9" font-weight="600" fill="#667085">Claude Code clones from GitHub <tspan font-style="italic">directly</tspan> &#8212; the gateway never serves file content</text>
+
+      <!-- ============ BAND 2 : RUNTIME ============ -->
+      <text x="0" y="205" font-size="11" font-weight="600" letter-spacing="0.09em" fill="#067647">RUNTIME &#8212; EVERY REQUEST</text>
+      <line x1="0" y1="215" x2="1000" y2="215" stroke="#e7e9ee"/>
+
+      <!-- F : session -->
+      <rect x="2" y="232" width="178" height="150" rx="12" fill="#fff2cc" stroke="#e8c96b" stroke-width="1.5"/>
+      <text x="91" y="256" text-anchor="middle" font-size="11.5" font-weight="600" fill="#7f6000">Claude Code session</text>
+      <rect x="14" y="270" width="154" height="44" rx="6" fill="#fffaeb" stroke="#e8c96b"/>
+      <text x="91" y="286" text-anchor="middle" font-size="7.5" class="mono" fill="#7f6000">./claude-gw.sh</text>
+      <text x="91" y="299" text-anchor="middle" font-size="7.5" class="mono" fill="#7f6000">claude-sonnet-4-5-local-q3-8b</text>
+      <text x="91" y="332" text-anchor="middle" font-size="8.5" fill="#a17d13">gateway is ANTHROPIC_BASE_URL</text>
+      <text x="91" y="349" text-anchor="middle" font-size="8.5" fill="#a17d13">key validated before launch;</text>
+      <text x="91" y="362" text-anchor="middle" font-size="8.5" fill="#a17d13">context and timeout per route</text>
+
+      <line x1="182" y1="300" x2="202" y2="300" stroke="#067647" stroke-width="1.7" marker-end="url(#arSg)"/>
+      <text x="192" y="290" text-anchor="middle" font-size="8" class="mono" fill="#067647">:4000</text>
+
+      <!-- G : the hook -->
+      <rect x="206" y="232" width="300" height="150" rx="13" fill="#f6f7ff" stroke="#c7cdfa" stroke-width="1.5"/>
+      <text x="356" y="253" text-anchor="middle" font-size="11.5" font-weight="600" fill="#3730a3">Pre-call hook &#183; step &#9315; skill injection</text>
+      <rect x="218" y="263" width="276" height="26" rx="5" fill="#e0e7ff" stroke="#a5b4fc" stroke-width="1.2"/>
+      <text x="356" y="274" text-anchor="middle" font-size="8.5" font-weight="700" fill="#3730a3">does the trigger regex match the conversation?</text>
+      <text x="356" y="285" text-anchor="middle" font-size="7.5" class="mono" fill="#4f46e5">.[jt]sx &#183; use client &#183; useEffect( &#183; next/&#8230;</text>
+      <rect x="218" y="293" width="276" height="26" rx="5" fill="#eef1fe" stroke="#dfe3fd"/>
+      <text x="356" y="304" text-anchor="middle" font-size="8.5" font-weight="700" fill="#3730a3">mode <tspan class="mono" font-size="8">installed</tspan> &#8212; did the developer opt in?</text>
+      <text x="356" y="315" text-anchor="middle" font-size="7.5" fill="#667085">plugin listed in Claude Code's &lt;system-reminder&gt;</text>
+      <rect x="218" y="323" width="276" height="26" rx="5" fill="#eef1fe" stroke="#dfe3fd"/>
+      <text x="356" y="334" text-anchor="middle" font-size="8.5" font-weight="700" fill="#3730a3">append SKILL.md body to <tspan class="mono" font-size="8">system</tspan></text>
+      <text x="356" y="345" text-anchor="middle" font-size="7.5" fill="#667085">AFTER the cache_control breakpoint &#183; &#8804; 20,000 chars</text>
+      <text x="356" y="366" text-anchor="middle" font-size="8.5" fill="#667085">manifest-driven &#8212; <tspan class="mono" font-size="8">skills-inject.json</tspan></text>
+
+      <line x1="508" y1="300" x2="528" y2="300" stroke="#067647" stroke-width="1.7" marker-end="url(#arSg)"/>
+
+      <!-- H : provider -->
+      <rect x="532" y="232" width="186" height="150" rx="12" fill="#fff" stroke="#d5d9e2" stroke-width="1.5"/>
+      <text x="625" y="256" text-anchor="middle" font-size="11.5" font-weight="600" fill="#101828">Provider &#183; model</text>
+      <rect x="544" y="270" width="162" height="40" rx="6" fill="#f9fafb" stroke="#e7e9ee"/>
+      <text x="625" y="286" text-anchor="middle" font-size="8.5" class="mono" fill="#344054">qwen3:8b via Ollama</text>
+      <text x="625" y="299" text-anchor="middle" font-size="8" fill="#667085">or any gateway route</text>
+      <text x="625" y="329" text-anchor="middle" font-size="8.5" fill="#667085">the standard arrives as</text>
+      <text x="625" y="342" text-anchor="middle" font-size="8.5" fill="#667085">ordinary system text &#8212; no</text>
+      <text x="625" y="355" text-anchor="middle" font-size="8.5" fill="#667085">tool call, no client support</text>
+      <text x="625" y="372" text-anchor="middle" font-size="8.5" font-weight="700" fill="#067647">needed on the model's side</text>
+
+      <line x1="720" y1="300" x2="740" y2="300" stroke="#067647" stroke-width="1.7" marker-end="url(#arSg)"/>
+
+      <!-- I : outcome -->
+      <rect x="744" y="232" width="254" height="150" rx="12" fill="#edfcf2" stroke="#a6f4c5" stroke-width="1.5"/>
+      <text x="871" y="256" text-anchor="middle" font-size="11.5" font-weight="600" fill="#05603a">A review that cites the rules</text>
+      <text x="871" y="277" text-anchor="middle" font-size="8.5" fill="#05603a">the model names which guidance it</text>
+      <text x="871" y="290" text-anchor="middle" font-size="8.5" fill="#05603a">applied, because the block asks it to</text>
+      <rect x="756" y="300" width="230" height="42" rx="6" fill="#fff" stroke="#a6f4c5"/>
+      <text x="871" y="316" text-anchor="middle" font-size="8" fill="#05603a">audited to <tspan class="mono" font-size="7.5">capture/modifications.jsonl</tspan></text>
+      <text x="871" y="332" text-anchor="middle" font-size="7.5" class="mono" fill="#067647">skills_injected &#183; inject_mode</text>
+      <text x="871" y="360" text-anchor="middle" font-size="8.5" fill="#3f7d5c">objective check on the client side:</text>
+      <text x="871" y="374" text-anchor="middle" font-size="8" class="mono" fill="#067647">check_skill_usage.py emumba-react</text>
+
+      <!-- ============ BAND 3 : the two paths ============ -->
+      <text x="0" y="424" font-size="11" font-weight="600" letter-spacing="0.09em" fill="#b54708">TWO PATHS, ONE SKILL.md</text>
+      <line x1="0" y1="434" x2="1000" y2="434" stroke="#e7e9ee"/>
+
+      <rect x="2" y="450" width="492" height="92" rx="12" fill="#fffaeb" stroke="#f0d48a" stroke-width="1.5"/>
+      <text x="20" y="472" font-size="11" font-weight="700" fill="#7f6000">&#9312;&nbsp; Claude Code's own <tspan class="mono" font-size="9.5">Skill</tspan> tool</text>
+      <text x="20" y="491" font-size="8.5" fill="#7f6000"><tspan font-weight="700">source</tspan> &#8212; the plugin cloned onto the developer's disk</text>
+      <text x="20" y="506" font-size="8.5" fill="#7f6000"><tspan font-weight="700">activation</tspan> &#8212; the model chooses whether to load it</text>
+      <text x="20" y="524" font-size="8.5" font-weight="700" fill="#b54708">measured: sonnet-5 loaded it unprompted, haiku-4-5 did not</text>
+      <text x="20" y="537" font-size="8.5" fill="#a17d13">distribution is deterministic; this step is not</text>
+
+      <rect x="506" y="450" width="492" height="92" rx="12" fill="#edfcf2" stroke="#a6f4c5" stroke-width="1.5"/>
+      <text x="524" y="472" font-size="11" font-weight="700" fill="#05603a">&#9313;&nbsp; Gateway injection</text>
+      <text x="524" y="491" font-size="8.5" fill="#05603a"><tspan font-weight="700">source</tspan> &#8212; the same file, volume-mounted into the container</text>
+      <text x="524" y="506" font-size="8.5" fill="#05603a"><tspan font-weight="700">activation</tspan> &#8212; unconditional once the trigger matches</text>
+      <text x="524" y="524" font-size="8.5" font-weight="700" fill="#067647">measured: applied on a local 8B that cannot call the Skill tool</text>
+      <text x="524" y="537" font-size="8.5" fill="#3f7d5c">this is what closes the activation gap</text>
+
+      <text x="500" y="566" text-anchor="middle" font-size="9" font-weight="600" fill="#667085"><tspan class="mono" font-size="8.5">../plugins/&lt;plugin&gt;/skills:/app/skills/&lt;plugin&gt;:ro</tspan> &#8212; one mount per plugin; one file, both paths, so they cannot drift apart</text>
+    </svg>
+    </div>
+  </div>
+
+  <div class="wh">
+    <div class="card what">
+      <h3>What</h3>
+<p><b>Central distribution of vetted engineering guidance</b> — every developer gets the same
+ reviewed material without anyone copying files by hand across hundreds of repositories. <b>Two plugins
+ are wired today</b>: <code>emumba-react</code> (1 skill) and <code>emumba-backend</code> (3 — REST
+ conventions, Spring Boot, Node/Express), <b>four injectable skills in total.</b></p>
+ <p>One <code>SKILL.md</code> reaches the model by <b>two independent paths</b>, and that distinction is
+ the whole finding: the marketplace path is <em>distribution</em>, and the injection path is
+ <em>activation</em>.</p>
+    </div>
+    <div class="card how">
+      <h3>How</h3>
+<ul>
+   <li><b>Path ① — the marketplace.</b> LiteLLM's UI "Skills" page is really a <em>Claude Code plugin
+       registry</em>: it stores git-source metadata, serves it at
+       <code>GET /claude-code/marketplace.json</code> (no authentication), and developers add it with
+       <code>claude plugin marketplace add</code>. Claude Code then clones the repository itself, directly
+       from GitHub — not through the gateway. The CLI offers the skill to the model, which
+       <b>may or may not choose to load it</b>.</li>
+   <li><b>Path ② — injection.</b> The pre-call hook appends matching skill bodies straight into the
+       request's <code>system</code> field, so the standard applies even on models that could not call
+       the <code>Skill</code> tool. Which skills, and what makes each relevant, is a data file —
+       <code>skills-inject.json</code>, one trigger regular expression per skill. Adding the fourth skill
+       needed no code change, which is the claim this item set out to test.</li>
+   <li><b>It is appended, never inserted</b> — Claude Code puts its <code>cache_control</code> breakpoint
+       on the last system block, so text added after it sits outside the cached prefix and prompt caching
+       is untouched. Default mode is <code>installed</code> (detected from Claude Code's own
+       <code>&lt;system-reminder&gt;</code>), not <code>always</code>, so it aids people who opted in
+       rather than rewriting the prompts of people who did not.</li>
+   <li><b>Triggers are matched with that catalogue removed</b> — the two checks deliberately read
+       different text. The catalogue lists every skill <em>by description</em>, and a description trips
+       its own trigger, so trigger matching sees the conversation without it while the installed-check
+       sees it intact. See the red note below for why.</li>
+   <li><b>Both paths read the same file</b> — the container mounts each plugin's own skills directory
+       read-only rather than holding a copy, so the marketplace and the injector cannot drift.
+       <b>One mount per plugin, not one shared mount:</b> a single flat <code>:/app/skills</code> can
+       only serve one plugin — the second such line shadows the first, and the skills it replaced stop
+       injecting <em>silently</em>.</li>
+   <li><b>Layout is not negotiable:</b> Claude Code discovers skills only at
+       <code>&lt;plugin-root&gt;/skills/&lt;name&gt;/SKILL.md</code>, and the plugin needs a
+       <code>.claude-plugin/plugin.json</code>. Use the <code>url</code> git-source form; the
+       <code>github</code> form clones over SSH and fails on any machine without a github.com host key.</li>
+ </ul>
+ <p class="note red"><b>Two bugs the second plugin exposed — 15 Sep 2026. Both failed silently.</b>
+ <b>① The catalogue triggered every skill.</b> Claude Code advertises installed skills inside a
+ <code>&lt;system-reminder&gt;</code>, one line each <em>including the description</em> — and a description
+ trips its own trigger (<code>spring-boot-service: Spring Boot service structure …</code> matches the
+ Spring Boot pattern). So every installed skill injected into every request regardless of topic: measured
+ on a pure Express file, it pulled in React <em>and</em> Spring Boot alongside the two that belonged —
+ <b>17,683 characters</b> of mostly irrelevant standard. <b>The defect was invisible at one skill</b>,
+ because a lone skill re-triggering off its own catalogue entry is indistinguishable from working; it
+ surfaced only at four. <b>② Injection skipped the developer who had just opted in.</b> A plugin installed
+ mid-session is listed by <em>name only</em> until its metadata is indexed, and the installed-check
+ required a trailing colon — so the freshest opt-in read as not-installed. Both are fixed. The lesson is
+ the one that generalises: <b>a capability that behaves correctly in a one-item demo is not evidence it
+ scales.</b></p>
+ <p class="note amber"><b>Three limits worth stating plainly.</b> The <code>version</code> field in the
+ LiteLLM catalogue is decorative — the version the CLI honours comes from the cloned repo, so bumping it
+ in the dashboard does not ship an update, with no error anywhere. There is no <code>team_id</code> and
+ no key scoping, so <b>no per-team catalogues</b> and no install telemetry. And activation is the model's
+ choice: given the same file and no explicit instruction, Sonnet auto-loaded the skill and Haiku did not
+ — <b>skills are advisory guidance, not a control</b>, which matters for any compliance framing.</p>
+ <p class="note amber"><b>And it cannot be measured by asking.</b> The <code>skillUsage</code> counter is
+ blind to injection by construction — an injected skill never passes through the <code>Skill</code> tool,
+ so it correctly reads zero while the standard is in fact applied. Self-reports are worse: a
+ <code>SKILL_USED=</code> line is unreliable in <em>both</em> directions, since weaker models receive
+ injected guidance as ordinary system text and deny using a skill, and will equally claim one they never
+ loaded. <b>Only an output A/B holds</b> — same request with injection on and off, compare whether the
+ answer cites the skill's specific rules. Injected blocks now also prompt the model to name the skill,
+ which makes that self-report <em>self-fulfilling</em> for the injection path: useful in a demo, but not
+ independent evidence.</p>
+    </div>
+  </div>
+</section>
+
+<section id="local">
+  <div class="sec-head">
+    <span class="sec-num">06</span>
+    <h2 class="sec-title">A private local model, driven from unmodified Claude Code</h2>
+  </div>
+
+  <div class="fig">
+    <div class="fig-cap"><b>Figure 10</b><span>One local request, end to end — every hop, format and conversion</span></div>
+    <div class="scroller">
+<svg viewBox="0 0 1000 300" role="img" aria-label="Claude Code sends Anthropic Messages format to the LiteLLM gateway on port 4000. The gateway authenticates, checks budget, captures the prompt and injects skills, then performs conversion one, Anthropic to OpenAI as an internal pivot, and conversion two, OpenAI to Ollama native, before posting to Ollama's /api/chat on the host. Ollama drives llama-server running qwen3 8b entirely on the GPU. The response returns along the same path, converted from Ollama native to OpenAI and then to Anthropic content blocks. No prompt leaves the laptop." style="min-width:880px">
+      <defs>
+        <marker id="arL" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M0 0 L10 5 L0 10 z" fill="#6366f1"/>
+        </marker>
+        <marker id="arLr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M0 0 L10 5 L0 10 z" fill="#0e7490"/>
+        </marker>
+      </defs>
+
+      <text x="0" y="13" font-size="11" font-weight="600" letter-spacing="0.09em" fill="#4f46e5">REQUEST &nbsp;&#8594;&nbsp; OUTBOUND</text>
+      <text x="1000" y="13" text-anchor="end" font-size="11" font-weight="600" letter-spacing="0.09em" fill="#0e7490">RESPONSE &nbsp;&#8592;&nbsp; INBOUND</text>
+      <line x1="0" y1="23" x2="1000" y2="23" stroke="#e7e9ee"/>
+
+      <!-- BOX 1 : Claude Code -->
+      <rect x="2" y="46" width="182" height="152" rx="12" fill="#fff2cc" stroke="#e8c96b"/>
+      <text x="93" y="72" text-anchor="middle" font-size="12.5" font-weight="600" fill="#7f6000">Claude Code</text>
+      <text x="93" y="90" text-anchor="middle" font-size="10" fill="#7f6000">CLI and desktop app</text>
+      <text x="93" y="106" text-anchor="middle" font-size="10" fill="#7f6000">unmodified, unaware</text>
+      <rect x="14" y="120" width="158" height="42" rx="6" fill="#fffaeb" stroke="#e8c96b"/>
+      <text x="93" y="136" text-anchor="middle" font-size="8.5" class="mono" fill="#7f6000">ANTHROPIC_BASE_URL</text>
+      <text x="93" y="151" text-anchor="middle" font-size="8.5" class="mono" fill="#7f6000">= localhost:4000</text>
+      <text x="93" y="182" text-anchor="middle" font-size="9" fill="#a17d13">the only client change</text>
+
+      <!-- GAP 1 -->
+      <text x="222" y="76" text-anchor="middle" font-size="10" font-weight="600" fill="#6366f1">Anthropic</text>
+      <text x="222" y="88" text-anchor="middle" font-size="10" font-weight="600" fill="#6366f1">Messages</text>
+      <line x1="186" y1="100" x2="258" y2="100" stroke="#6366f1" stroke-width="1.7" marker-end="url(#arL)"/>
+      <text x="222" y="114" text-anchor="middle" font-size="8" class="mono" fill="#8b8ff5">/v1/messages</text>
+
+      <line x1="258" y1="152" x2="186" y2="152" stroke="#0e7490" stroke-width="1.7" marker-end="url(#arLr)"/>
+      <text x="222" y="142" text-anchor="middle" font-size="8" class="mono" fill="#5fa9bd">content[] blocks</text>
+      <text x="222" y="168" text-anchor="middle" font-size="10" font-weight="600" fill="#0e7490">Anthropic</text>
+      <text x="222" y="180" text-anchor="middle" font-size="10" font-weight="600" fill="#0e7490">Messages</text>
+
+      <!-- BOX 2 : LiteLLM -->
+      <rect x="260" y="34" width="270" height="176" rx="13" fill="#f6f7ff" stroke="#c7cdfa" stroke-width="1.5"/>
+      <text x="395" y="58" text-anchor="middle" font-size="12.5" font-weight="600" fill="#3730a3">LiteLLM gateway &nbsp;:4000</text>
+      <text x="395" y="75" text-anchor="middle" font-size="9.5" fill="#4f46e5">auth &#183; budget &#183; capture &#183; skill inject</text>
+      <rect x="274" y="86" width="242" height="21" rx="5" fill="#eef1fe" stroke="#dfe3fd"/>
+      <text x="395" y="100" text-anchor="middle" font-size="9" font-weight="600" fill="#3730a3">&#9312; Anthropic &#8594; OpenAI &nbsp;(internal pivot)</text>
+      <rect x="274" y="111" width="242" height="21" rx="5" fill="#eef1fe" stroke="#dfe3fd"/>
+      <text x="395" y="125" text-anchor="middle" font-size="9" font-weight="600" fill="#3730a3">&#9313; OpenAI &#8594; Ollama native</text>
+      <rect x="274" y="140" width="242" height="21" rx="5" fill="#ecfbff" stroke="#cbeaf5"/>
+      <text x="395" y="154" text-anchor="middle" font-size="9" font-weight="600" fill="#0e7490">&#9312;&#9313; reversed on the way back</text>
+      <text x="395" y="180" text-anchor="middle" font-size="9" fill="#667085">the OpenAI form is a pivot &#8212; never on the wire</text>
+      <text x="395" y="196" text-anchor="middle" font-size="9" fill="#667085">it is also what the capture files record</text>
+
+      <!-- GAP 2 -->
+      <text x="570" y="76" text-anchor="middle" font-size="10" font-weight="600" fill="#6366f1">Ollama</text>
+      <text x="570" y="88" text-anchor="middle" font-size="10" font-weight="600" fill="#6366f1">native</text>
+      <line x1="532" y1="100" x2="606" y2="100" stroke="#6366f1" stroke-width="1.7" marker-end="url(#arL)"/>
+      <text x="570" y="114" text-anchor="middle" font-size="8" class="mono" fill="#8b8ff5">/api/chat</text>
+
+      <line x1="606" y1="152" x2="532" y2="152" stroke="#0e7490" stroke-width="1.7" marker-end="url(#arLr)"/>
+      <text x="570" y="142" text-anchor="middle" font-size="8" class="mono" fill="#5fa9bd">done_reason</text>
+      <text x="570" y="168" text-anchor="middle" font-size="10" font-weight="600" fill="#0e7490">Ollama</text>
+      <text x="570" y="180" text-anchor="middle" font-size="10" font-weight="600" fill="#0e7490">native</text>
+
+      <!-- BOX 3 : Ollama -->
+      <rect x="608" y="46" width="180" height="152" rx="12" fill="#ecfdf3" stroke="#abefc6"/>
+      <text x="698" y="72" text-anchor="middle" font-size="12.5" font-weight="600" fill="#067647">Ollama &nbsp;:11434</text>
+      <text x="698" y="90" text-anchor="middle" font-size="10" fill="#067647">on the host, not in Docker</text>
+      <rect x="620" y="102" width="156" height="58" rx="6" fill="#f0fdf6" stroke="#abefc6"/>
+      <text x="698" y="118" text-anchor="middle" font-size="8.5" class="mono" fill="#067647">num_ctx: 32768</text>
+      <text x="698" y="133" text-anchor="middle" font-size="8.5" class="mono" fill="#067647">think: false</text>
+      <text x="698" y="150" text-anchor="middle" font-size="8.5" class="mono" fill="#067647">OLLAMA_HOST=0.0.0.0</text>
+      <text x="698" y="182" text-anchor="middle" font-size="9" fill="#12805a">no Anthropic surface at all</text>
+
+      <!-- GAP 3 -->
+      <text x="818" y="82" text-anchor="middle" font-size="9.5" font-weight="600" fill="#6366f1">tensors</text>
+      <line x1="790" y1="100" x2="846" y2="100" stroke="#6366f1" stroke-width="1.7" marker-end="url(#arL)"/>
+      <line x1="846" y1="152" x2="790" y2="152" stroke="#0e7490" stroke-width="1.7" marker-end="url(#arLr)"/>
+      <text x="818" y="170" text-anchor="middle" font-size="9.5" font-weight="600" fill="#0e7490">tokens</text>
+
+      <!-- BOX 4 : llama-server -->
+      <rect x="848" y="46" width="150" height="152" rx="12" fill="#fff" stroke="#d5d9e2"/>
+      <text x="923" y="72" text-anchor="middle" font-size="12.5" font-weight="600" fill="#101828">llama-server</text>
+      <text x="923" y="90" text-anchor="middle" font-size="9.5" class="mono" fill="#344054">qwen3:8b</text>
+      <text x="923" y="106" text-anchor="middle" font-size="10" fill="#667085">100% GPU &#183; Metal</text>
+      <rect x="860" y="118" width="126" height="42" rx="6" fill="#f5f6f9" stroke="#e7e9ee"/>
+      <text x="923" y="134" text-anchor="middle" font-size="8.5" class="mono" fill="#344054">KV cache q8_0</text>
+      <text x="923" y="149" text-anchor="middle" font-size="8.5" class="mono" fill="#344054">flash-attn on</text>
+      <text x="923" y="182" text-anchor="middle" font-size="9" fill="#667085">16 GB M1 Pro</text>
+
+      <!-- footer band -->
+      <rect x="2" y="236" width="996" height="52" rx="10" fill="#ecfdf3" stroke="#abefc6"/>
+      <text x="24" y="258" font-size="11" font-weight="600" fill="#067647">Everything inside this diagram runs on the developer's laptop. No prompt, file or command reaches any provider.</text>
+      <text x="24" y="276" font-size="10" fill="#05603a">Ollama has no Anthropic-compatible endpoint &#8212; Anthropic support on this route is entirely LiteLLM's translation layer.</text>
+    </svg>
+    </div>
+  </div>
+
+  <div class="wh">
+    <div class="card what">
+      <h3>What</h3>
+<p><b>Claude Code driven by a model running entirely on the developer's own laptop</b> — no provider
+ account, no API key, and no prompt leaving the machine — while spend attribution, budget enforcement,
+ prompt capture and the request-modification hooks all continue to work.</p>
+ <p>That is the result worth reporting: a fully offline model the provider never sees and cannot bill
+ still appears in the spend log, still counts against a developer's budget, and still has its full prompt
+ captured. Three wire formats appear in sequence (Anthropic → OpenAI → Ollama) and Ollama never sees
+ Anthropic format at any point.</p>
+    </div>
+    <div class="card how">
+      <h3>How</h3>
+<ul>
+   <li><b>Three pieces, none of which touch Claude Code's code:</b> Ollama on the host, one
+       <code>model_list</code> entry in <code>config.yaml</code>, and a Claude-shaped alias so the model
+       appears in the desktop picker.</li>
+   <li><code>OLLAMA_HOST=0.0.0.0</code> — Ollama binds <code>127.0.0.1</code> by default, which Docker's
+       host gateway cannot reach. Single most likely cause of a "local model is broken" report.</li>
+   <li><code>ollama_chat/qwen3:8b</code>, <b>not <code>ollama/</code></b> — the plain prefix uses the
+       legacy <code>/api/generate</code> route, which has no tool-call support, and Claude Code cannot run
+       without it.</li>
+   <li><code>num_ctx: 32768</code> — Ollama defaults to 4096 and <b>silently truncates</b>;
+       <code>think: false</code> — qwen3 emits its whole reasoning block before any visible text and
+       consumes the entire output budget otherwise.</li>
+   <li><b>A nominal, deliberately non-zero per-token cost</b> (<code>1e-7</code>). LiteLLM skips all
+       budget checks for a zero-cost model, so a genuinely free route would be exempt from
+       <code>max_budget</code> entirely — disabling the very enforcement the PoC exists to prove.</li>
+   <li>Host memory is the real constraint: run Ollama with <code>OLLAMA_KV_CACHE_TYPE=q8_0</code>, or a
+       32k window spills to CPU and looks like a hang rather than an error.</li>
+ </ul>
+
+ <h4 class="cmd-h">Checking the service is running</h4>
+ <p class="cmd-lede">Run from <code>litellm-gateway/</code>. Every command below was executed on the PoC
+ host on 15 Sep 2026; the comments are its real output.</p>
+ <pre class="cmd"><span class="c"># the whole chain in one command — Docker, Ollama, its environment, the model,</span>
+<span class="c"># the stack, both ports, container &rarr; host reach, and the virtual key</span>
+./gateway-up.sh --status
+
+<span class="c"># is the service up at all?</span>
+pgrep -fl ollama                   <span class="c"># 8641 ollama serve</span>
+curl -s http://localhost:11434/    <span class="c"># Ollama is running</span>
+ollama list                        <span class="c"># on disk:  qwen3:8b  5.2 GB</span>
+ollama ps                          <span class="c"># resident in RAM right now — empty when idle</span>
+
+<span class="c"># is it bound where the container can reach it?</span>
+<span class="c"># (cause #1 of a "the local model is broken" report)</span>
+lsof -nP -iTCP:11434 -sTCP:LISTEN  <span class="c"># TCP *:11434 — NOT 127.0.0.1:11434</span>
+ps eww "$(pgrep -f 'ollama serve')" | tr ' ' '\n' | grep '^OLLAMA'
+<span class="c">#   OLLAMA_HOST=0.0.0.0        OLLAMA_KV_CACHE_TYPE=q8_0</span>
+<span class="c">#   OLLAMA_FLASH_ATTENTION=1   OLLAMA_KEEP_ALIVE=30m</span>
+
+<span class="c"># the same question asked from inside the container — the image has no curl</span>
+docker compose exec -T litellm python -c \
+  "import urllib.request; print(urllib.request.urlopen(
+   'http://host.docker.internal:11434/', timeout=5).read().decode())"
+<span class="c">#   Ollama is running</span></pre>
+
+ <h4 class="cmd-h">Reading its logs</h4>
+ <pre class="cmd"><span class="c"># Ollama writes to stdout and keeps no log file of its own — there is no</span>
+<span class="c"># ~/.ollama/logs/ on this host. gateway-up.sh redirects it, so this is the log:</span>
+tail -f ollama-serve.log
+
+<span class="c"># one line per model call, with the wall clock — this is where the slow cold</span>
+<span class="c"># first turn and the fast warm turns are visible</span>
+grep '/api/chat' ollama-serve.log | tail -5
+<span class="c">#   [GIN] 2026/09/14 - 14:45:56 | 200 | 3m37s | 127.0.0.1 | POST "/api/chat"</span>
+
+<span class="c"># if that file is missing or stale — where is stdout actually going?</span>
+lsof -p "$(pgrep -f 'ollama serve')" | awk '$4 ~ /^1w/ {print $NF}'
+
+<span class="c"># the gateway's side of the same request</span>
+docker compose logs -f litellm</pre>
+
+ <p class="note amber"><b>Honest framing for a demo: "first turn about three minutes, every turn after
+ about five seconds."</b> A measured 214-second first call was 19,501 input tokens for 20 output tokens —
+ about 94% of the wall clock was the model <em>reading</em> Claude Code's preamble at ~100 tok/s, not
+ writing an answer. Ollama's KV prefix cache then reuses that preamble, so the cost is paid once per
+ session, not per turn. Viability here is a hardware question, not an integration one.</p>
+    </div>
+  </div>
+</section>
+
+<section id="zai">
+  <div class="sec-head">
+    <span class="sec-num">07</span>
+    <h2 class="sec-title">z.ai — a first-party provider, added without code</h2>
+  </div>
+
+  <div class="fig">
+    <div class="fig-cap"><b>Figure 11</b><span>One z.ai request, end to end — every hop, format and conversion</span></div>
+    <div class="scroller">
+<svg viewBox="0 0 1000 300" role="img" aria-label="Claude Code sends Anthropic Messages format to the LiteLLM gateway on port 4000. The gateway authenticates, checks the model ACL and budget, and captures the prompt, then converts Anthropic format to OpenAI Chat Completions format and swaps the virtual key for the real z.ai key. It posts to api.z.ai slash api slash paas slash v4 slash chat slash completions. The z.ai GLM model answers, and the response is converted back from OpenAI format to Anthropic content blocks. A prefix cache on the z.ai side served 23,810 tokens from cache on repeat requests." style="min-width:880px">
+      <defs>
+        <marker id="arZ" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M0 0 L10 5 L0 10 z" fill="#6366f1"/>
+        </marker>
+        <marker id="arZr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M0 0 L10 5 L0 10 z" fill="#0e7490"/>
+        </marker>
+        <marker id="arZg" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M0 0 L10 5 L0 10 z" fill="#12805a"/>
+        </marker>
+      </defs>
+
+      <text x="0" y="13" font-size="11" font-weight="600" letter-spacing="0.09em" fill="#4f46e5">REQUEST &nbsp;&#8594;&nbsp; OUTBOUND</text>
+      <text x="1000" y="13" text-anchor="end" font-size="11" font-weight="600" letter-spacing="0.09em" fill="#0e7490">RESPONSE &nbsp;&#8592;&nbsp; INBOUND</text>
+      <line x1="0" y1="23" x2="1000" y2="23" stroke="#e7e9ee"/>
+
+      <!-- BOX 1 : Claude Code -->
+      <rect x="2" y="46" width="176" height="152" rx="12" fill="#fff2cc" stroke="#e8c96b"/>
+      <text x="90" y="72" text-anchor="middle" font-size="12.5" font-weight="600" fill="#7f6000">Claude Code</text>
+      <text x="90" y="90" text-anchor="middle" font-size="10" fill="#7f6000">CLI and desktop app</text>
+      <text x="90" y="106" text-anchor="middle" font-size="10" fill="#7f6000">unmodified, unaware</text>
+      <rect x="14" y="120" width="152" height="42" rx="6" fill="#fffaeb" stroke="#e8c96b"/>
+      <text x="90" y="136" text-anchor="middle" font-size="8.5" class="mono" fill="#7f6000">ANTHROPIC_BASE_URL</text>
+      <text x="90" y="151" text-anchor="middle" font-size="8.5" class="mono" fill="#7f6000">= localhost:4000</text>
+      <text x="90" y="182" text-anchor="middle" font-size="9" fill="#a17d13">never learns the vendor</text>
+
+      <!-- GAP 1 -->
+      <text x="216" y="76" text-anchor="middle" font-size="10" font-weight="600" fill="#6366f1">Anthropic</text>
+      <text x="216" y="88" text-anchor="middle" font-size="10" font-weight="600" fill="#6366f1">Messages</text>
+      <line x1="180" y1="100" x2="252" y2="100" stroke="#6366f1" stroke-width="1.7" marker-end="url(#arZ)"/>
+      <text x="216" y="114" text-anchor="middle" font-size="8" class="mono" fill="#8b8ff5">/v1/messages</text>
+
+      <line x1="252" y1="152" x2="180" y2="152" stroke="#0e7490" stroke-width="1.7" marker-end="url(#arZr)"/>
+      <text x="212" y="142" text-anchor="middle" font-size="8" class="mono" fill="#5fa9bd">content[]</text>
+      <text x="216" y="168" text-anchor="middle" font-size="10" font-weight="600" fill="#0e7490">Anthropic</text>
+      <text x="216" y="180" text-anchor="middle" font-size="10" font-weight="600" fill="#0e7490">Messages</text>
+
+      <!-- BOX 2 : LiteLLM -->
+      <rect x="254" y="34" width="272" height="176" rx="13" fill="#f6f7ff" stroke="#c7cdfa" stroke-width="1.5"/>
+      <text x="390" y="58" text-anchor="middle" font-size="12.5" font-weight="600" fill="#3730a3">LiteLLM gateway &nbsp;:4000</text>
+      <text x="390" y="75" text-anchor="middle" font-size="9.5" fill="#4f46e5">auth &#183; model ACL &#183; budget &#183; capture</text>
+      <rect x="268" y="86" width="244" height="21" rx="5" fill="#eef1fe" stroke="#dfe3fd"/>
+      <text x="390" y="100" text-anchor="middle" font-size="9" font-weight="600" fill="#3730a3">&#9312; Anthropic &#8594; OpenAI</text>
+      <rect x="268" y="111" width="244" height="21" rx="5" fill="#ecfbff" stroke="#cbeaf5"/>
+      <text x="390" y="125" text-anchor="middle" font-size="9" font-weight="600" fill="#0e7490">&#9312; reversed on the way back</text>
+      <rect x="268" y="140" width="244" height="21" rx="5" fill="#fffaeb" stroke="#f0d99b"/>
+      <text x="390" y="154" text-anchor="middle" font-size="9" font-weight="600" fill="#b45309">swap VIRTUAL key &#8594; ZAI_API_KEY</text>
+      <text x="390" y="180" text-anchor="middle" font-size="9" fill="#667085">the OpenAI form is a pivot &#8212; it is also</text>
+      <text x="390" y="194" text-anchor="middle" font-size="9" fill="#667085">what the capture files record</text>
+
+      <!-- GAP 2 -->
+      <text x="592" y="76" text-anchor="middle" font-size="10" font-weight="600" fill="#6366f1">OpenAI</text>
+      <text x="592" y="88" text-anchor="middle" font-size="10" font-weight="600" fill="#6366f1">Chat Completions</text>
+      <line x1="528" y1="100" x2="656" y2="100" stroke="#6366f1" stroke-width="1.7" marker-end="url(#arZ)"/>
+      <text x="592" y="114" text-anchor="middle" font-size="8" class="mono" fill="#8b8ff5">/chat/completions</text>
+
+      <line x1="656" y1="152" x2="528" y2="152" stroke="#0e7490" stroke-width="1.7" marker-end="url(#arZr)"/>
+      <text x="592" y="142" text-anchor="middle" font-size="8" class="mono" fill="#5fa9bd">choices[].message</text>
+      <text x="592" y="168" text-anchor="middle" font-size="10" font-weight="600" fill="#0e7490">OpenAI completion</text>
+      <text x="592" y="180" text-anchor="middle" font-size="10" font-weight="600" fill="#0e7490">/ SSE chunks</text>
+
+      <!-- BOX 3 : z.ai -->
+      <rect x="658" y="46" width="192" height="152" rx="12" fill="#ecfdf3" stroke="#abefc6" stroke-width="1.5"/>
+      <text x="754" y="72" text-anchor="middle" font-size="12.5" font-weight="600" fill="#067647">z.ai &#8212; first party</text>
+      <text x="754" y="89" text-anchor="middle" font-size="8.5" class="mono" fill="#067647">api.z.ai/api/paas/v4</text>
+      <rect x="670" y="100" width="168" height="60" rx="6" fill="#f0fdf6" stroke="#abefc6"/>
+      <text x="754" y="116" text-anchor="middle" font-size="8.5" class="mono" fill="#067647">glm-4.7-flash</text>
+      <text x="754" y="131" text-anchor="middle" font-size="8.5" class="mono" fill="#067647">glm-4.5-flash</text>
+      <text x="754" y="150" text-anchor="middle" font-size="8.5" class="mono" fill="#067647">thinking: disabled</text>
+      <text x="754" y="182" text-anchor="middle" font-size="9" fill="#12805a">no Anthropic surface at all</text>
+
+      <!-- GAP 3 -->
+      <line x1="852" y1="122" x2="874" y2="122" stroke="#12805a" stroke-width="1.5" marker-end="url(#arZg)"/>
+
+      <!-- BOX 4 : prefix cache -->
+      <rect x="876" y="46" width="122" height="152" rx="12" fill="#fff" stroke="#abefc6"/>
+      <text x="937" y="72" text-anchor="middle" font-size="11" font-weight="600" fill="#067647">prefix cache</text>
+      <text x="937" y="106" text-anchor="middle" font-size="19" font-weight="600" fill="#067647">23,810</text>
+      <text x="937" y="124" text-anchor="middle" font-size="9" fill="#12805a">tokens served</text>
+      <text x="937" y="136" text-anchor="middle" font-size="9" fill="#12805a">from cache</text>
+      <text x="937" y="162" text-anchor="middle" font-size="8.5" fill="#667085">caching survives</text>
+      <text x="937" y="174" text-anchor="middle" font-size="8.5" fill="#667085">the translation</text>
+      <text x="937" y="190" text-anchor="middle" font-size="8.5" fill="#667085">&#8212; see gap 6</text>
+
+      <!-- footer band -->
+      <rect x="2" y="236" width="996" height="52" rx="10" fill="#f6f7ff" stroke="#c7cdfa"/>
+      <text x="24" y="258" font-size="11" font-weight="600" fill="#3730a3">z.ai has no Anthropic-compatible endpoint. Anthropic support on this route is entirely LiteLLM's translation layer &#8212; two conversions out, two back.</text>
+      <text x="24" y="276" font-size="10" fill="#4f46e5">Every control-plane property &#8212; key check, model ACL, budget gate, capture &#8212; runs before the vendor is chosen, so none of it is provider-specific.</text>
+    </svg>
+    </div>
+  </div>
+
+  <div class="wh">
+    <div class="card what">
+      <h3>What</h3>
+<p><b>A whole new provider added as a configuration change, not an engineering one.</b> z.ai is
+ reached first-party through LiteLLM's native <code>zai</code> provider, with an Emumba-held key: one
+ account, one hop, one party seeing the prompt. Zero lines of code.</p>
+ <p>Every control-plane property — key check, model ACL, budget gate, capture callback — applies to the
+ new routes unchanged, because they all run <em>before</em> the vendor is ever chosen. That is the
+ strongest available evidence that this is a genuinely provider-neutral control point rather than an
+ Anthropic passthrough with extras bolted on.</p>
+ <p><b>And prompt caching survives the translation:</b> an identical 23,810-token prefix sent three times
+ was billed in full once and served from cache on both repeats.</p>
+    </div>
+    <div class="card how">
+      <h3>How</h3>
+<ul>
+   <li><b>Two <code>model_list</code> entries and one environment variable.</b> Translation happens
+       exactly twice, in one place, and nothing about it is z.ai-specific — which is why the same
+       machinery absorbed the next provider too.</li>
+   <li>Routes registered: <code>zai-glm47-flash</code> (200k in / 128k out, the default) and
+       <code>zai-glm45-flash</code>. Both support tool calling, which is non-negotiable.</li>
+   <li><b>Free here means free</b>, not expiring trial credit — but only the exact ids
+       <code>glm-4.7-flash</code> and <code>glm-4.5-flash</code>. Plain <code>GLM-4.7</code> and
+       <code>GLM-4.7-FlashX</code> are both <em>paid</em>, one character away.</li>
+   <li><b>The effective control on a reasoning model is the output budget, not the flag.</b>
+       <code>thinking: {type: disabled}</code> reduces reasoning, it does not remove it: at
+       <code>max_tokens: 64</code> zero runs produced text, at 256 all five did. Do not smoke-test this
+       route at 64 tokens and conclude it is broken. Related trap — <code>reasoning_effort</code> is
+       accepted and silently does nothing.</li>
+   <li><b>Alias naming is load-bearing:</b> <code>glm</code> is on the desktop picker's deny list, hence
+       <code>zai-47f</code> and <code>zai-45f</code>.</li>
+ </ul>
+ <p class="note amber"><b>The free tier is roughly 1 request/second and it bites</b> — and no fallback is
+ configured between the two routes (<code>Available Model Group Fallbacks=None</code>). A developer
+ pinned to the 4.7 route gets a hard rate-limit error and has to switch by hand. Adding
+ <code>fallbacks</code> in <code>config.yaml</code> is a prerequisite before this is offered to more than
+ one person at a time.</p>
+    </div>
+  </div>
+</section>
+
+<section id="openai">
+  <div class="sec-head">
+    <span class="sec-num">08</span>
+    <h2 class="sec-title">OpenAI — the same path, re-tested, and where it stops</h2>
+  </div>
+
+  <div class="fig">
+    <div class="fig-cap"><b>Figure 12</b><span>One OpenAI request — every hop, and the exact point it stops today</span></div>
+    <div class="scroller">
+<svg viewBox="0 0 1000 300" role="img" aria-label="Claude Code sends Anthropic Messages format to the LiteLLM gateway on port 4000. The gateway authenticates, checks the model ACL and budget, and captures the prompt, then converts Anthropic format to OpenAI Chat Completions format, clamps the output reservation from 32000 to 8000 tokens, and swaps the virtual key for the real OpenAI key. It posts to api.openai.com slash v1 slash chat slash completions. OpenAI authenticates the account and then refuses the request with HTTP 429 credit balance exhausted, because the account has no credit. The return path, converting OpenAI format back to Anthropic content blocks, is drawn dashed because it has never been exercised." style="min-width:880px">
+      <defs>
+        <marker id="arO" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M0 0 L10 5 L0 10 z" fill="#6366f1"/>
+        </marker>
+        <marker id="arOr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M0 0 L10 5 L0 10 z" fill="#8fbccb"/>
+        </marker>
+        <marker id="arOx" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M0 0 L10 5 L0 10 z" fill="#b42318"/>
+        </marker>
+      </defs>
+
+      <text x="0" y="13" font-size="11" font-weight="600" letter-spacing="0.09em" fill="#4f46e5">REQUEST &nbsp;&#8594;&nbsp; OUTBOUND &#8212; VERIFIED</text>
+      <text x="1000" y="13" text-anchor="end" font-size="11" font-weight="600" letter-spacing="0.09em" fill="#8fbccb">RESPONSE &nbsp;&#8592;&nbsp; INBOUND &#8212; NEVER EXERCISED</text>
+      <line x1="0" y1="23" x2="1000" y2="23" stroke="#e7e9ee"/>
+
+      <!-- BOX 1 : Claude Code -->
+      <rect x="2" y="46" width="176" height="152" rx="12" fill="#fff2cc" stroke="#e8c96b"/>
+      <text x="90" y="72" text-anchor="middle" font-size="12.5" font-weight="600" fill="#7f6000">Claude Code</text>
+      <text x="90" y="90" text-anchor="middle" font-size="10" fill="#7f6000">CLI and desktop app</text>
+      <text x="90" y="106" text-anchor="middle" font-size="10" fill="#7f6000">unmodified, unaware</text>
+      <rect x="14" y="120" width="152" height="42" rx="6" fill="#fffaeb" stroke="#e8c96b"/>
+      <text x="90" y="136" text-anchor="middle" font-size="8.5" class="mono" fill="#7f6000">ANTHROPIC_BASE_URL</text>
+      <text x="90" y="151" text-anchor="middle" font-size="8.5" class="mono" fill="#7f6000">= localhost:4000</text>
+      <text x="90" y="182" text-anchor="middle" font-size="9" fill="#a17d13">speaks only Anthropic</text>
+
+      <!-- GAP 1 -->
+      <text x="216" y="76" text-anchor="middle" font-size="10" font-weight="600" fill="#6366f1">Anthropic</text>
+      <text x="216" y="88" text-anchor="middle" font-size="10" font-weight="600" fill="#6366f1">Messages</text>
+      <line x1="180" y1="100" x2="252" y2="100" stroke="#6366f1" stroke-width="1.7" marker-end="url(#arO)"/>
+      <text x="216" y="114" text-anchor="middle" font-size="8" class="mono" fill="#8b8ff5">/v1/messages</text>
+
+      <line x1="252" y1="152" x2="180" y2="152" stroke="#8fbccb" stroke-width="1.7" stroke-dasharray="5 4" marker-end="url(#arOr)"/>
+      <text x="212" y="142" text-anchor="middle" font-size="8" class="mono" fill="#8fbccb">content[]</text>
+      <text x="216" y="168" text-anchor="middle" font-size="10" font-weight="600" fill="#8fbccb">Anthropic</text>
+      <text x="216" y="180" text-anchor="middle" font-size="10" font-weight="600" fill="#8fbccb">Messages</text>
+
+      <!-- BOX 2 : LiteLLM -->
+      <rect x="254" y="34" width="272" height="176" rx="13" fill="#f6f7ff" stroke="#c7cdfa" stroke-width="1.5"/>
+      <text x="390" y="55" text-anchor="middle" font-size="12.5" font-weight="600" fill="#3730a3">LiteLLM gateway &nbsp;:4000</text>
+      <text x="390" y="71" text-anchor="middle" font-size="9.5" fill="#4f46e5">auth &#183; model ACL &#183; budget &#183; capture</text>
+      <rect x="268" y="80" width="244" height="21" rx="5" fill="#eef1fe" stroke="#dfe3fd"/>
+      <text x="390" y="94" text-anchor="middle" font-size="9" font-weight="600" fill="#3730a3">&#9312; Anthropic &#8594; OpenAI</text>
+      <rect x="268" y="105" width="244" height="21" rx="5" fill="#f5f6f9" stroke="#d5d9e2"/>
+      <text x="390" y="119" text-anchor="middle" font-size="9" font-weight="600" fill="#8fbccb">&#9312; reversed on the way back</text>
+      <rect x="268" y="130" width="244" height="21" rx="5" fill="#fffaeb" stroke="#f0d99b"/>
+      <text x="390" y="144" text-anchor="middle" font-size="9" font-weight="600" fill="#b45309">swap VIRTUAL key &#8594; OPENAI_API_KEY</text>
+      <rect x="268" y="155" width="244" height="21" rx="5" fill="#fffaeb" stroke="#f0d99b"/>
+      <text x="390" y="169" text-anchor="middle" font-size="9" font-weight="600" fill="#b45309">clamp max_tokens 32000 &#8594; 8000</text>
+      <text x="390" y="194" text-anchor="middle" font-size="9" fill="#667085">no api_base set &#8212; the SDK's own default</text>
+
+      <!-- GAP 2 -->
+      <text x="592" y="76" text-anchor="middle" font-size="10" font-weight="600" fill="#6366f1">OpenAI</text>
+      <text x="592" y="88" text-anchor="middle" font-size="10" font-weight="600" fill="#6366f1">Chat Completions</text>
+      <line x1="528" y1="100" x2="656" y2="100" stroke="#6366f1" stroke-width="1.7" marker-end="url(#arO)"/>
+      <text x="592" y="114" text-anchor="middle" font-size="8" class="mono" fill="#8b8ff5">/chat/completions</text>
+
+      <line x1="656" y1="152" x2="528" y2="152" stroke="#8fbccb" stroke-width="1.7" stroke-dasharray="5 4" marker-end="url(#arOr)"/>
+      <text x="592" y="142" text-anchor="middle" font-size="8" class="mono" fill="#8fbccb">choices[].message</text>
+      <text x="592" y="168" text-anchor="middle" font-size="10" font-weight="600" fill="#8fbccb">OpenAI completion</text>
+      <text x="592" y="180" text-anchor="middle" font-size="10" font-weight="600" fill="#8fbccb">/ SSE chunks</text>
+
+      <!-- BOX 3 : OpenAI -->
+      <rect x="658" y="46" width="192" height="152" rx="12" fill="#ecfdf3" stroke="#abefc6" stroke-width="1.5"/>
+      <text x="754" y="72" text-anchor="middle" font-size="12.5" font-weight="600" fill="#067647">OpenAI &#8212; first party</text>
+      <text x="754" y="89" text-anchor="middle" font-size="8.5" class="mono" fill="#067647">api.openai.com/v1</text>
+      <rect x="670" y="100" width="168" height="60" rx="6" fill="#f0fdf6" stroke="#abefc6"/>
+      <text x="754" y="118" text-anchor="middle" font-size="8.5" class="mono" fill="#067647">gpt-4.1-nano</text>
+      <text x="754" y="136" text-anchor="middle" font-size="8.5" class="mono" fill="#067647">1,047,576 ctx</text>
+      <text x="754" y="152" text-anchor="middle" font-size="8.5" fill="#12805a">not a reasoning model</text>
+      <text x="754" y="182" text-anchor="middle" font-size="9" font-weight="600" fill="#12805a">key accepted &#183; account identified</text>
+
+      <!-- GAP 3 -->
+      <line x1="852" y1="122" x2="874" y2="122" stroke="#b42318" stroke-width="1.7" marker-end="url(#arOx)"/>
+
+      <!-- BOX 4 : the billing wall -->
+      <rect x="876" y="46" width="122" height="152" rx="12" fill="#fef3f2" stroke="#fecdca" stroke-width="1.5"/>
+      <text x="937" y="70" text-anchor="middle" font-size="11" font-weight="600" fill="#b42318">billing gate</text>
+      <text x="937" y="102" text-anchor="middle" font-size="21" font-weight="600" fill="#b42318">429</text>
+      <text x="937" y="122" text-anchor="middle" font-size="8" class="mono" fill="#b42318">credit_balance</text>
+      <text x="937" y="133" text-anchor="middle" font-size="8" class="mono" fill="#b42318">_exhausted</text>
+      <text x="937" y="156" text-anchor="middle" font-size="8.5" fill="#667085">&#8220;You have no</text>
+      <text x="937" y="168" text-anchor="middle" font-size="8.5" fill="#667085">credits remaining.&#8221;</text>
+      <text x="937" y="188" text-anchor="middle" font-size="8.5" font-weight="600" fill="#b42318">not a gateway fault</text>
+
+      <!-- footer band -->
+      <rect x="2" y="236" width="996" height="52" rx="10" fill="#f6f7ff" stroke="#c7cdfa"/>
+      <text x="24" y="258" font-size="11" font-weight="600" fill="#3730a3">Solid arrows were exercised on 7 Sep 2026. Dashed arrows are the designed return path and have never run &#8212; the 429 arrives before any response is translated.</text>
+      <text x="24" y="276" font-size="10" fill="#4f46e5">A 401 would mean a bad key and a 404 a wrong model id. This is neither: OpenAI identified the account, then refused it on money. The gateway path is proven.</text>
+    </svg>
+    </div>
+  </div>
+
+  <div class="wh">
+    <div class="card what">
+      <h3>What</h3>
+<p><b>The provider-neutrality claim, re-tested on a second vendor — and it held.</b> One
+ <code>model_list</code> entry, one environment variable, no code. The gateway resolved the route,
+ authenticated against OpenAI, and reached the provider on the first attempt.</p>
+ <p><b>This is also the section to be most careful about: the route has never returned a completion.</b>
+ OpenAI accepted the credentials and then refused on billing — the account balance is zero, not merely
+ low. Everything up to the provider boundary is verified; the last hop is not, and a <code>429</code>
+ cannot rule out a second problem behind it.</p>
+    </div>
+    <div class="card how">
+      <h3>How</h3>
+<ul>
+   <li><code>gpt-4.1-nano</code> was chosen over the cheaper <code>gpt-5-nano</code> <b>on failure modes,
+       not on price</b> — the saving is about $0.0015 per <em>thousand</em> calls. <code>gpt-5-nano</code>
+       is a reasoning model that rejects <code>max_tokens</code>, rejects a non-default
+       <code>temperature</code>, and bills invisible reasoning tokens; each is a <code>400</code>
+       indistinguishable at a glance from a bad key — precisely the ambiguity a connectivity test exists
+       to remove.</li>
+   <li><b>Pricing is cross-verified</b> — LiteLLM's built-in cost map and OpenAI's published page agree to
+       the digit, so unlike the OpenRouter entries this route needs no hand-pinned
+       <code>model_info</code> and does not fall into the silent-$0 budget failure.</li>
+   <li><b>A billing failure is a diagnostic:</b> <code>401</code>, <code>404</code> and <code>429</code>
+       divide the failure space cleanly into <em>our key</em>, <em>our config</em> and
+       <em>their balance</em>. <code>verify_openai.py</code> prints which of the three it is.</li>
+   <li>Verified today: route registered (pass), cost map populated (pass),
+       <code>POST /v1/chat/completions</code> and <code>POST /v1/messages</code> — both
+       <code>429 insufficient_quota</code>.</li>
+ </ul>
+ <p class="note amber"><b>Decision needed: fund the account, or comment the entry out.</b> Leaving it
+ registered, failing and unexplained is the one option that is not defensible — and it breaks the rule
+ the z.ai section set for itself, that a route answering every call with a billing error reads as a
+ broken gateway.</p>
+    </div>
+  </div>
+</section>
+
+<section id="routing">
+  <div class="sec-head">
+    <span class="sec-num">09</span>
+    <h2 class="sec-title">Content-based route override — keeping a client's work on-prem</h2>
+  </div>
+
+  <div class="fig">
+    <div class="fig-cap"><b>Figure 13</b><span>The route-override decision — where it happens, and what it writes down</span></div>
+    <div class="scroller">
+<svg viewBox="0 0 1000 430" role="img" aria-label="Claude Code sends a request with the picked model claude-haiku-4-5 to the LiteLLM gateway. The gateway's pre-call hook runs five steps in order, of which step one is the route override. The override builds a haystack from the system prompt and the message history newest first up to two million characters, then tests the compiled keyword patterns for extreme networks and extremenetworks on word boundaries, case insensitively, first rule wins. On a match the model is rewritten to local-qwen3-8b, the max tokens clamp and tool slimmer then apply, and Ollama on the host answers so no prompt leaves the laptop. On no match the model is left untouched and the request goes to Anthropic as normal. Either way three records are written: modifications dot jsonl, capture index dot jsonl, and the LiteLLM spend log tags." style="min-width:940px">
+      <defs>
+        <marker id="arR" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M0 0 L10 5 L0 10 z" fill="#6366f1"/>
+        </marker>
+        <marker id="arRg" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M0 0 L10 5 L0 10 z" fill="#067647"/>
+        </marker>
+        <marker id="arRn" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M0 0 L10 5 L0 10 z" fill="#98a2b3"/>
+        </marker>
+        <marker id="arRd" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M0 0 L10 5 L0 10 z" fill="#b54708"/>
+        </marker>
+      </defs>
+
+      <text x="0" y="13" font-size="11" font-weight="600" letter-spacing="0.09em" fill="#4f46e5">ONE REQUEST, ONE DECISION</text>
+      <line x1="0" y1="23" x2="1000" y2="23" stroke="#e7e9ee"/>
+
+      <!-- BOX 1 : Claude Code -->
+      <rect x="2" y="58" width="158" height="132" rx="12" fill="#fff2cc" stroke="#e8c96b"/>
+      <text x="81" y="84" text-anchor="middle" font-size="12.5" font-weight="600" fill="#7f6000">Claude Code</text>
+      <text x="81" y="101" text-anchor="middle" font-size="9.5" fill="#7f6000">CLI or desktop app</text>
+      <rect x="14" y="112" width="134" height="40" rx="6" fill="#fffaeb" stroke="#e8c96b"/>
+      <text x="81" y="128" text-anchor="middle" font-size="8.5" fill="#7f6000">picker says</text>
+      <text x="81" y="143" text-anchor="middle" font-size="8.5" class="mono" fill="#7f6000">claude-haiku-4-5</text>
+      <text x="81" y="174" text-anchor="middle" font-size="9" fill="#a17d13">unchanged, and unaware</text>
+
+      <line x1="162" y1="124" x2="216" y2="124" stroke="#6366f1" stroke-width="1.7" marker-end="url(#arR)"/>
+      <text x="189" y="114" text-anchor="middle" font-size="8" class="mono" fill="#8b8ff5">:4000</text>
+
+      <!-- BOX 2 : the hook -->
+      <rect x="218" y="42" width="236" height="196" rx="13" fill="#f6f7ff" stroke="#c7cdfa" stroke-width="1.5"/>
+      <text x="336" y="66" text-anchor="middle" font-size="12" font-weight="600" fill="#3730a3">Pre-call hook &#183; <tspan class="mono" font-size="10">_modify()</tspan></text>
+      <text x="336" y="82" text-anchor="middle" font-size="9" fill="#667085">after key check, ACL and budget</text>
+      <rect x="230" y="92" width="212" height="22" rx="5" fill="#e0e7ff" stroke="#a5b4fc" stroke-width="1.2"/>
+      <text x="336" y="107" text-anchor="middle" font-size="9" font-weight="700" fill="#3730a3">&#9312; route override &nbsp;&#8592; this section</text>
+      <rect x="230" y="118" width="212" height="20" rx="5" fill="#eef1fe" stroke="#dfe3fd"/>
+      <text x="336" y="132" text-anchor="middle" font-size="8.5" fill="#3730a3">&#9313; max_tokens clamp</text>
+      <rect x="230" y="142" width="212" height="20" rx="5" fill="#eef1fe" stroke="#dfe3fd"/>
+      <text x="336" y="156" text-anchor="middle" font-size="8.5" fill="#3730a3">&#9314; secret redaction &nbsp;(off by default)</text>
+      <rect x="230" y="166" width="212" height="20" rx="5" fill="#eef1fe" stroke="#dfe3fd"/>
+      <text x="336" y="180" text-anchor="middle" font-size="8.5" fill="#3730a3">&#9315; skill injection</text>
+      <rect x="230" y="190" width="212" height="20" rx="5" fill="#eef1fe" stroke="#dfe3fd"/>
+      <text x="336" y="204" text-anchor="middle" font-size="8.5" fill="#3730a3">&#9316; tool slimming</text>
+      <text x="336" y="228" text-anchor="middle" font-size="8.5" fill="#667085">&#9312; runs first &#8212; &#9313; and &#9316; read the model it sets</text>
+
+      <line x1="456" y1="124" x2="508" y2="124" stroke="#6366f1" stroke-width="1.7" marker-end="url(#arR)"/>
+
+      <!-- BOX 3 : the test -->
+      <rect x="510" y="42" width="224" height="196" rx="13" fill="#fff" stroke="#d5d9e2" stroke-width="1.5"/>
+      <text x="622" y="66" text-anchor="middle" font-size="12" font-weight="600" fill="#101828">The match test</text>
+      <rect x="522" y="78" width="200" height="46" rx="6" fill="#f9fafb" stroke="#e7e9ee"/>
+      <text x="622" y="94" text-anchor="middle" font-size="8.5" fill="#344054">haystack = system prompt</text>
+      <text x="622" y="107" text-anchor="middle" font-size="8.5" fill="#344054">+ messages, newest first</text>
+      <text x="622" y="119" text-anchor="middle" font-size="8" class="mono" fill="#667085">&#8804; 2,000,000 chars</text>
+      <rect x="522" y="130" width="200" height="60" rx="6" fill="#fffaeb" stroke="#f0d48a"/>
+      <text x="622" y="146" text-anchor="middle" font-size="8" class="mono" fill="#7f6000">extreme[\s\-_]*network</text>
+      <text x="622" y="160" text-anchor="middle" font-size="8.5" fill="#a17d13">substring &#183; no word boundaries</text>
+      <text x="622" y="176" text-anchor="middle" font-size="8.5" fill="#a17d13">case-insensitive &#183; first rule wins</text>
+      <text x="622" y="209" text-anchor="middle" font-size="8.5" fill="#667085">stateless &#8212; decided per request,</text>
+      <text x="622" y="222" text-anchor="middle" font-size="8.5" fill="#667085">from the text of that request only</text>
+
+      <!-- branch arrows -->
+      <path d="M736 104 L760 104 L760 82 L784 82" fill="none" stroke="#067647" stroke-width="1.8" marker-end="url(#arRg)"/>
+      <text x="762" y="72" text-anchor="middle" font-size="9" font-weight="700" fill="#067647">MATCH</text>
+      <path d="M736 176 L760 176 L760 206 L784 206" fill="none" stroke="#98a2b3" stroke-width="1.8" marker-end="url(#arRn)"/>
+      <text x="764" y="226" text-anchor="middle" font-size="9" font-weight="700" fill="#667085">NO MATCH</text>
+
+      <!-- BOX 4 : match -->
+      <rect x="786" y="42" width="212" height="106" rx="12" fill="#ecfdf3" stroke="#abefc6"/>
+      <text x="892" y="62" text-anchor="middle" font-size="10.5" font-weight="700" fill="#067647">model := local-qwen3-8b</text>
+      <text x="892" y="79" text-anchor="middle" font-size="8.5" class="mono" fill="#067647">&#8594; ollama_chat/qwen3:8b</text>
+      <text x="892" y="95" text-anchor="middle" font-size="8.5" fill="#12805a">clamp 8,000 &#183; tools 36 &#8594; 4</text>
+      <text x="892" y="111" text-anchor="middle" font-size="8.5" fill="#12805a">Ollama on the host answers</text>
+      <text x="892" y="132" text-anchor="middle" font-size="9" font-weight="600" fill="#067647">no prompt leaves the laptop</text>
+
+      <!-- BOX 5 : no match -->
+      <rect x="786" y="160" width="212" height="78" rx="12" fill="#f9fafb" stroke="#e7e9ee"/>
+      <text x="892" y="182" text-anchor="middle" font-size="10.5" font-weight="600" fill="#344054">model untouched</text>
+      <text x="892" y="199" text-anchor="middle" font-size="8.5" class="mono" fill="#667085">claude-haiku-4-5</text>
+      <text x="892" y="216" text-anchor="middle" font-size="8.5" fill="#667085">hosted provider, as normal</text>
+      <text x="892" y="231" text-anchor="middle" font-size="8.5" fill="#98a2b3">nothing logged, no tags added</text>
+
+      <!-- records strip -->
+      <line x1="0" y1="266" x2="1000" y2="266" stroke="#e7e9ee"/>
+      <text x="0" y="288" font-size="11" font-weight="600" letter-spacing="0.09em" fill="#b54708">ON A MATCH, THREE RECORDS &#8212; ALL NAMING THE MODEL THAT ANSWERED</text>
+
+      <path d="M892 150 L892 300" fill="none" stroke="#b54708" stroke-width="1.5" stroke-dasharray="4 3" marker-end="url(#arRd)"/>
+
+      <rect x="2" y="304" width="322" height="106" rx="12" fill="#fffaf5" stroke="#f0c9a5"/>
+      <text x="163" y="326" text-anchor="middle" font-size="10.5" font-weight="700" fill="#b54708">capture/modifications.jsonl</text>
+      <text x="163" y="344" text-anchor="middle" font-size="8.5" fill="#8a5a26">the override, spelled out</text>
+      <text x="163" y="362" text-anchor="middle" font-size="8" class="mono" fill="#8a5a26">from: claude-haiku-4-5</text>
+      <text x="163" y="375" text-anchor="middle" font-size="8" class="mono" fill="#8a5a26">to: local-qwen3-8b</text>
+      <text x="163" y="388" text-anchor="middle" font-size="8" class="mono" fill="#8a5a26">rule: extreme-networks-on-prem</text>
+      <text x="163" y="401" text-anchor="middle" font-size="8" class="mono" fill="#8a5a26">matched: extreme network</text>
+
+      <rect x="338" y="304" width="322" height="106" rx="12" fill="#fffaf5" stroke="#f0c9a5"/>
+      <text x="499" y="326" text-anchor="middle" font-size="10.5" font-weight="700" fill="#b54708">capture/index.jsonl</text>
+      <text x="499" y="344" text-anchor="middle" font-size="8.5" fill="#8a5a26">the prompt record, attributed correctly</text>
+      <text x="499" y="362" text-anchor="middle" font-size="8" class="mono" fill="#8a5a26">model: ollama_chat/qwen3:8b</text>
+      <text x="499" y="375" text-anchor="middle" font-size="8" class="mono" fill="#8a5a26">model_group: local-qwen3-8b</text>
+      <text x="499" y="388" text-anchor="middle" font-size="8" class="mono" fill="#8a5a26">client_model: claude-haiku-4-5</text>
+      <text x="499" y="401" text-anchor="middle" font-size="8" class="mono" fill="#8a5a26">model_overridden: true</text>
+
+      <rect x="674" y="304" width="324" height="106" rx="12" fill="#fffaf5" stroke="#f0c9a5"/>
+      <text x="836" y="326" text-anchor="middle" font-size="10.5" font-weight="700" fill="#b54708">LiteLLM spend log</text>
+      <text x="836" y="344" text-anchor="middle" font-size="8.5" fill="#8a5a26">queryable in the UI, not just greppable</text>
+      <text x="836" y="362" text-anchor="middle" font-size="8" class="mono" fill="#8a5a26">tag: gateway-routed:extreme-networks-on-prem</text>
+      <text x="836" y="375" text-anchor="middle" font-size="8" class="mono" fill="#8a5a26">tag: client-model:claude-haiku-4-5</text>
+      <text x="836" y="390" text-anchor="middle" font-size="8" class="mono" fill="#8a5a26">spend_logs_metadata: served_by, route_rule,</text>
+      <text x="836" y="402" text-anchor="middle" font-size="8" class="mono" fill="#8a5a26">matched_keyword</text>
+    </svg>
+    </div>
+  </div>
+
+  <div class="wh">
+    <div class="card what">
+      <h3>What</h3>
+<p><b>Keeping one client's work on-prem, by default rather than by discipline.</b> The gateway reads
+ the text of each request and, when the conversation names a client whose work is scoped to on-premise
+ inference, serves that request from the private local model — whatever model the developer picked. The
+ developer changes nothing.</p>
+ <p>One rule ships enabled: a conversation mentioning <b>Extreme Network</b> — any spelling, singular or
+ plural, even buried inside a longer word — is answered by <code>local-qwen3-8b</code>. The alternative
+ was a written instruction to switch the picker by hand, which is a control that fails the first time
+ someone is in a hurry, and fails silently.</p>
+ <p class="note amber"><b>Be equally clear about what this is not.</b> It is a keyword match on request
+ text, not data classification. It catches a conversation that names the client; it does not catch one
+ that pastes the client's config without naming them. <b>It is a strong default and a useful audit
+ signal — it is not a data-loss-prevention boundary</b>, and should not be described to a client or an
+ auditor as one.</p>
+    </div>
+    <div class="card how">
+      <h3>How</h3>
+<ul>
+   <li><b>The hook builds the text it will search</b> — system prompt plus message history, concatenated
+       <em>newest first</em>, up to <code>GATEWAY_ROUTE_SCAN_CHARS</code> (2,000,000 characters).
+       Newest first because that is where the signal is.</li>
+   <li><b>Rules run in order, first match wins</b>, and on a match the <code>model</code> on the request
+       is rewritten. If the developer had already selected the target model it is a no-op and deliberately
+       not logged.</li>
+   <li><b>Ordering is load-bearing:</b> the rest of the hook then runs against the <em>new</em> model, so
+       the <code>max_tokens</code> clamp and the tool slimmer (36 tool definitions → 4, ~14,500 tokens
+       saved) both key off the rewritten name. Without them the request does not fit the local model's
+       32,768-token context, and Ollama truncates the overflow in silence.</li>
+   <li><b>Three records are written, all naming the model that actually answered</b> rather than the one
+       the picker asked for — which is what keeps cost attribution honest.</li>
+   <li><b>Matching is deliberately wide</b> — no word boundaries, <code>[\s\-_]*</code> between the
+       words — so a branch name like <code>extremenetworksmigration</code> fires. The accepted cost is
+       over-matching ("extreme network latency" routes local), asserted in the test suite rather than
+       merely tolerated: a false positive costs one developer one degraded answer and is visible; a false
+       negative sends client material to a hosted provider and <b>nobody sees it at all</b>.</li>
+   <li><b>Rules are deployment configuration, not code</b> — one JSON object in
+       <code>GATEWAY_ROUTE_RULES</code> adds a client. Treat it like a permission list: without word
+       boundaries, a short keyword is dangerous in a way it was not before.</li>
+   <li><b>Verified:</b> 24/24 offline logic checks, plus 12 real overrides in the live audit trail
+       showing <code>model: ollama_chat/qwen3:8b</code> against
+       <code>client_model: claude-haiku-4-5</code>.</li>
+ </ul>
+    </div>
+  </div>
+</section>
+
+<section id="picker">
+  <div class="sec-head">
+    <span class="sec-num">10</span>
+    <h2 class="sec-title">The desktop model picker — two ports, one gateway</h2>
+  </div>
+
+  <div class="fig">
+    <div class="fig-cap"><b>Figure 9</b><span>Two ports, one gateway — how the desktop picker gets readable rows</span></div>
+    <div class="scroller">
+<svg viewBox="0 0 1000 290" role="img" aria-label="Desktop app talks to the picker shim on port 4001, which rewrites display names and proxies to LiteLLM on 4000; the CLI talks to 4000 directly" style="min-width:760px">
+      <defs>
+        <marker id="ar9" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M0 0 L10 5 L0 10 z" fill="#6366f1"/>
+        </marker>
+        <marker id="ar9g" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M0 0 L10 5 L0 10 z" fill="#98a2b3"/>
+        </marker>
+      </defs>
+
+      <!-- clients -->
+      <rect x="0" y="34" width="196" height="72" rx="11" fill="#eef1fe" stroke="#c7cdfb"/>
+      <text x="98" y="62" text-anchor="middle" font-size="11.5" font-weight="600" fill="#3730a3">Desktop app</text>
+      <text x="98" y="82" text-anchor="middle" font-size="10" fill="#4338ca">model picker</text>
+      <text x="98" y="97" text-anchor="middle" font-size="9.5" fill="#6366f1">ignores env vars entirely</text>
+
+      <rect x="0" y="150" width="196" height="62" rx="11" fill="#f7f8fa" stroke="#e7e9ee"/>
+      <text x="98" y="176" text-anchor="middle" font-size="11.5" font-weight="600" fill="#344054">CLI / curl</text>
+      <text x="98" y="195" text-anchor="middle" font-size="10" fill="#667085">honest aliases, unchanged</text>
+
+      <!-- shim -->
+      <path d="M196 70 L286 70" stroke="#6366f1" stroke-width="1.8" fill="none" marker-end="url(#ar9)"/>
+      <text x="241" y="60" text-anchor="middle" font-size="9.5" fill="#6366f1">:4001</text>
+
+      <rect x="290" y="26" width="228" height="88" rx="11" fill="#fff" stroke="#c7cdfb" stroke-width="1.4"/>
+      <text x="404" y="52" text-anchor="middle" font-size="11.5" font-weight="600" fill="#3730a3">picker-shim</text>
+      <text x="404" y="71" text-anchor="middle" font-size="10" fill="#4338ca">nginx, ~40 lines, no state</text>
+      <text x="404" y="89" text-anchor="middle" font-size="10" fill="#667085">rewrites <tspan class="mono">display_name</tspan> on</text>
+      <text x="404" y="104" text-anchor="middle" font-size="10" fill="#667085"><tspan class="mono">/v1/models</tspan> · proxies all else</text>
+
+      <!-- litellm -->
+      <path d="M518 70 L604 70" stroke="#6366f1" stroke-width="1.8" fill="none" marker-end="url(#ar9)"/>
+      <text x="561" y="60" text-anchor="middle" font-size="9.5" fill="#6366f1">:4000</text>
+      <path d="M196 181 L604 181" stroke="#98a2b3" stroke-width="1.6" fill="none" marker-end="url(#ar9g)"/>
+      <text x="400" y="171" text-anchor="middle" font-size="9.5" fill="#98a2b3">:4000 — direct, no shim</text>
+
+      <rect x="608" y="26" width="200" height="176" rx="11" fill="#f7f8fa" stroke="#e7e9ee"/>
+      <text x="708" y="52" text-anchor="middle" font-size="11.5" font-weight="600" fill="#344054">LiteLLM gateway</text>
+      <text x="708" y="74" text-anchor="middle" font-size="10" fill="#667085">36 routes registered</text>
+      <line x1="628" y1="88" x2="788" y2="88" stroke="#e7e9ee"/>
+      <text x="628" y="108" font-size="10" fill="#344054">4 Anthropic</text>
+      <text x="628" y="128" font-size="10" fill="#344054">16 honest aliases</text>
+      <text x="628" y="148" font-size="10" fill="#344054">16 picker aliases</text>
+      <text x="628" y="176" font-size="9.5" fill="#667085">budgets · capture · attribution</text>
+      <text x="628" y="191" font-size="9.5" fill="#667085">identical on every route</text>
+
+      <path d="M808 114 L892 114" stroke="#6366f1" stroke-width="1.8" fill="none" marker-end="url(#ar9)"/>
+      <rect x="896" y="80" width="104" height="68" rx="11" fill="#ecfbff" stroke="#cbeaf5"/>
+      <text x="948" y="108" text-anchor="middle" font-size="11" font-weight="600" fill="#0e7490">Providers</text>
+      <text x="948" y="127" text-anchor="middle" font-size="9.5" fill="#0e7490">OpenRouter / Groq</text>
+
+      <line x1="0" y1="238" x2="1000" y2="238" stroke="#e7e9ee"/>
+      <text x="0" y="258" font-size="10.5" fill="#667085"><tspan font-weight="600" fill="#101828">Port 4000 is untouched.</tspan> The shim is additive — every existing client, key and script keeps working exactly as before.</text>
+      <text x="0" y="276" font-size="10.5" fill="#667085">The picker alias is a naming trick only; the request still resolves to the same underlying provider route, with the same budget and the same capture.</text>
+    </svg>
+    </div>
+  </div>
+
+  <div class="wh">
+    <div class="card what">
+      <h3>What</h3>
+<p><b>Getting the models to work was configuration; getting them to appear in the Claude Code desktop
+ app was the harder half.</b> The dashboard listed every model and the picker showed only the four
+ <code>claude-*</code> ones.</p>
+ <p>Two independent causes, neither of them ours: the desktop app ignores <code>ANTHROPIC_BASE_URL</code>
+ and <code>settings.json</code> entirely, reading gateway routing only from its own third-party inference
+ configuration; and its model discovery <b>filters by name</b>, dropping any ID that does not look
+ Anthropic before rendering the picker.</p>
+    </div>
+    <div class="card how">
+      <h3>How</h3>
+<ul>
+   <li><b>The rule was read out of the app bundle</b> (<code>[custom-3p]</code> discovery function): a
+       ~50-token vendor deny list is evaluated <em>first</em> as a hard veto, so a <code>claude-</code>
+       prefix cannot rescue an id. Setting <code>inferenceModels</code> explicitly does not help —
+       contrary to the vendor documentation, the same check is applied to an explicit list.
+       <b>On a gateway provider, renaming is not one option among several; it is the only one.</b></li>
+   <li><b>Part 1 — the ID must survive the deny list.</b> Each provider model got a second, Claude-shaped,
+       <em>vendor-free</em> alias, each checked against the regex individually: <code>gmn</code> avoids
+       <code>gemini</code>, <code>dsk</code> avoids <code>\bds-</code> and <code>dpsk</code>,
+       <code>zai</code> avoids <code>glm</code>, <code>nvda</code> avoids <code>nemotron</code>.</li>
+   <li><b>Part 2 — the label.</b> LiteLLM sets <code>display_name</code> to the ID and offers no hook to
+       override it, so <code>picker-shim</code> (nginx on port 4001) rewrites it on the way out via
+       <code>sub_filter</code>. Three details are load-bearing, each learned by breaking it:
+       <code>Accept-Encoding ""</code>, <code>proxy_buffering off</code>, and
+       <code>sub_filter_types application/json</code>. Port 4000 and the CLI are unchanged.</li>
+   <li><b>The trap that costs an hour:</b> <code>GET /v1/models</code> returns <em>the calling key's</em>
+       allowlist, not the gateway's config. Add or rename an alias without running
+       <code>/key/update</code> and the app keeps receiving the old list — which looks exactly like the
+       rename having failed.</li>
+   <li><b>Setup:</b> Developer Mode → Configure Third-Party Inference; base URL
+       <code>http://localhost:4001</code> (the shim, <em>not</em> 4000); virtual key as a static bearer
+       token; clear <code>inferenceModels</code> entirely; restart the app, since the picker caches
+       discovery.</li>
+ </ul>
+ <p class="note amber"><b>Two disclosures.</b> Selecting a free model does not make the session free and
+ does not keep prompts off Anthropic — Claude Code's background traffic (titles, summaries) always goes
+ to a haiku-class model regardless of the picker. And the filter rule lives in the app bundle, so an
+ update can change it without notice: re-verify the picker after every desktop release.</p>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <p>Every figure is reproduced from the full status report and was measured on the running stack —
+     nothing here is projected. Condensed to three things per flow: the diagram, what it does, how it works.
+     Detail, evidence tables, risks and next steps remain in <b>Emumba_PoC_Status_Report.html</b>.</p>
+  <p>Per Emumba's ISO 27001 posture, nothing in this document should be read as a statement that a control
+     is implemented. These are PoC findings pending verification with the relevant control owner.</p>
+</footer>
+
+</div>
+</body>
+</html>
